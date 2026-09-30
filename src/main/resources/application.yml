@@ -1,0 +1,13 @@
+filtered-stream:
+  # 建立 SSE 响应时立即写入响应头 workFlowId 的固定值。
+  workflow-id: filtered-model-stream-workflow-v1
+  # 每个首帧都会下发该对象；后续 FALLBACK 帧只负责通知客户端展示它。
+  fallback-answer:
+    content: 抱歉，当前服务暂时不可用，请稍后再试。
+    link-mapping: []
+    card-mapping: []
+  upstream:
+    url: http://localhost:18080/api/v1/chat/stream
+  validation:
+    blocked-keywords: []
+    refusal-message: 请求内容未通过校验
