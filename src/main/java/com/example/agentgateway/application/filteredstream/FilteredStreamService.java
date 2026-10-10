@@ -128,7 +128,17 @@ public class FilteredStreamService {
             return externalModelStreamPort.openStream(requestContext)
                     // 只要统一上游帧已经抵达，就属于流式处理阶段；之后的
                     // ERROR 帧、协议异常或内容异常都必须覆盖已输出内容。
-                    .doOnNext(frame -> context.markUpstreamFrameReceived())
+                    .doOnNext(frame -> {
+                        context.markUpstreamFrameReceived();
+                        if (!Boolean.TRUE.equals(frame.getMetadata())
+                                && frame.hasContent()) {
+                            int frameNumber = context.appendOriginContent(
+                                    frame.getContent());
+                            log.info("接收上游原始正文帧, recordId={}, frameNumber={}, content={}",
+                                    context.getRecordId(), frameNumber,
+                                    frame.getContent());
+                        }
+                    })
                     // status=FALLBACK 的首帧仍要交给 processFrame 输出；随后
                     // takeUntil 立即取消上游订阅，避免模型继续生成正文。
                     .takeUntil(frame -> Boolean.TRUE.equals(frame.getMetadata())
@@ -291,7 +301,7 @@ public class FilteredStreamService {
         if (!recommendations.isEmpty()) {
             events.add(FilteredStreamEvent.recommendations(recommendations));
         }
-        events.add(FilteredStreamEvent.done());
+        events.add(FilteredStreamEvent.done(context.getOriginContent()));
         return Flux.fromIterable(events);
     }
 

@@ -18,4 +18,6 @@ public class FilteredStreamFrameBody {
     private final List<Object> agentAnswerSlots;
     private final List<FilteredSuggestedQuery> suggestedQuery;
     private final String recordId;
+    /** 正常完成的 DONE 帧中，上游正文帧未经替换的拼接内容。 */
+    private final String originContent;
 }

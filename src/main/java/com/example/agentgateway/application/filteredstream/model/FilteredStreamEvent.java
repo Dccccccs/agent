@@ -27,26 +27,30 @@ public class FilteredStreamEvent {
     private final List<RecommendationQuery> recommendationQueries;
     /** 首帧预下发的结构化兜底回答。 */
     private final List<FallbackMessage> fallbackMessages;
+    /** 仅正常完成时携带的上游原始正文全文。 */
+    private final String originContent;
 
     private FilteredStreamEvent(FilteredStreamEventType type,
                                 String metadataJson,
                                 String recordId,
                                 ProcessedContentBlock contentBlock,
                                 List<RecommendationQuery> recommendationQueries,
-                                List<FallbackMessage> fallbackMessages) {
+                                List<FallbackMessage> fallbackMessages,
+                                String originContent) {
         this.type = type;
         this.metadataJson = metadataJson;
         this.recordId = recordId;
         this.contentBlock = contentBlock;
         this.recommendationQueries = recommendationQueries;
         this.fallbackMessages = immutableFallbackMessages(fallbackMessages);
+        this.originContent = originContent;
     }
 
     public static FilteredStreamEvent metadata(String metadataJson,
                                                String recordId,
                                                List<FallbackMessage> fallbackMessages) {
         return new FilteredStreamEvent(FilteredStreamEventType.METADATA,
-                metadataJson, recordId, null, null, fallbackMessages);
+                metadataJson, recordId, null, null, fallbackMessages, null);
     }
 
     /**
@@ -61,7 +65,7 @@ public class FilteredStreamEvent {
 
     public static FilteredStreamEvent content(ProcessedContentBlock block) {
         return new FilteredStreamEvent(FilteredStreamEventType.CONTENT,
-                null, null, block, null, null);
+                null, null, block, null, null, null);
     }
 
     public static FilteredStreamEvent recommendations(
@@ -71,17 +75,22 @@ public class FilteredStreamEvent {
                 Collections.unmodifiableList(
                         new ArrayList<RecommendationQuery>(
                                 recommendationQueries)),
-                null);
+                null, null);
     }
 
     public static FilteredStreamEvent fallback() {
         return new FilteredStreamEvent(FilteredStreamEventType.FALLBACK,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent done() {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
+    }
+
+    public static FilteredStreamEvent done(String originContent) {
+        return new FilteredStreamEvent(FilteredStreamEventType.DONE,
+                null, null, null, null, null, originContent);
     }
 
     private static List<FallbackMessage> immutableFallbackMessages(

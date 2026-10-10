@@ -10,6 +10,9 @@ import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
 final class FilteredStreamProcessingContext {
     private final StreamingContentProcessor processor;
     private final String recordId;
+    /** 上游正文帧的原始 content，按接收顺序拼接，未经内容规则替换。 */
+    private final StringBuilder originContent = new StringBuilder();
+    private int originFrameCount;
     private StreamMetadata metadata = StreamMetadata.empty();
     private boolean metadataForwarded;
     private boolean contentStarted;
@@ -29,6 +32,15 @@ final class FilteredStreamProcessingContext {
 
     String getRecordId() {
         return recordId;
+    }
+
+    int appendOriginContent(String content) {
+        originContent.append(content);
+        return ++originFrameCount;
+    }
+
+    String getOriginContent() {
+        return originContent.toString();
     }
 
     StreamMetadata getMetadata() {

@@ -356,8 +356,6 @@ class FilteredModelStreamIntegrationTest {
                         "\"linkId\":\"000001\"")))
                 .andExpect(content().string(containsString(
                         "text=\\\"华夏成长\\\"")))
-                .andExpect(content().string(not(containsString(
-                        "模型输出名称"))))
                 .andExpect(content().string(containsString(
                         "\"suggestedQuery\":[{\"query\":\"上游推荐问\"," 
                                 + "\"intent\":null},{\"query\":"
@@ -366,6 +364,8 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         String stream = result.getResponse().getContentAsString();
+        org.junit.jupiter.api.Assertions.assertFalse(
+                dataFrameContent(stream).contains("模型输出名称"));
         int recommendationIndex = stream.indexOf("深度解读华夏成长");
         int recommendationMetadataIndex = stream.lastIndexOf(
                 "\"returnType\":\"METADATA\"");
@@ -526,13 +526,13 @@ class FilteredModelStreamIntegrationTest {
                 .andExpect(content().string(containsString("后文")))
                 .andExpect(content().string(not(containsString(
                         "\"fundList\""))))
-                .andExpect(content().string(not(containsString(
-                        "<li id="))))
                 .andExpect(content().string(containsString(
                         "\"returnType\":\"DONE\"")))
                 .andReturn();
 
         String stream = result.getResponse().getContentAsString();
+        org.junit.jupiter.api.Assertions.assertFalse(
+                dataFrameContent(stream).contains("<li id="));
         org.junit.jupiter.api.Assertions.assertTrue(
                 stream.indexOf("前文") < stream.indexOf("card_combined_001"));
         org.junit.jupiter.api.Assertions.assertTrue(
@@ -773,6 +773,37 @@ class FilteredModelStreamIntegrationTest {
     }
 
     @Test
+    void shouldReturnOriginalUpstreamContentOnlyInNormalDoneFrame()
+            throws Exception {
+        String metadata = "{\"body\":{\"status\":\"NORMAL\"},"
+                + "\"returnType\":\"METADATA\"}";
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadata),
+                        UpstreamStreamFrame.content("极"),
+                        UpstreamStreamFrame.content("端高"),
+                        UpstreamStreamFrame.content("尾帧", true)));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"origin-content\","
+                        + "\"uid\":\"u-1\",\"question\":\"普通问题\"}"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("较高")))
+                .andExpect(content().string(not(containsString(
+                        "\"returnType\":\"FALLBACK\""))))
+                .andReturn();
+
+        JsonNode done = doneFrame(result.getResponse().getContentAsString());
+        org.junit.jupiter.api.Assertions.assertEquals("DONE",
+                done.path("returnType").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("极端高尾帧",
+                done.path("body").path("originContent").asText());
+        org.junit.jupiter.api.Assertions.assertFalse(done.has("originContent"));
+    }
+
+    @Test
     void oldAgentGatewayPathShouldNotExposeNewFeature() throws Exception {
         mockMvc.perform(post("/api/v1/agent/filtered-query")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -844,6 +875,35 @@ class FilteredModelStreamIntegrationTest {
                 "FALLBACK", fallback.path("returnType").asText());
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("body"));
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("message"));
+        JsonNode done = doneFrame(stream);
+        org.junit.jupiter.api.Assertions.assertFalse(done.has("body"));
+        org.junit.jupiter.api.Assertions.assertFalse(done.has("originContent"));
+    }
+
+    private JsonNode doneFrame(String stream) throws Exception {
+        int doneIndex = stream.lastIndexOf("\"returnType\":\"DONE\"");
+        int frameStart = stream.lastIndexOf("data:", doneIndex);
+        int frameEnd = stream.indexOf("\n\n", doneIndex);
+        return OBJECT_MAPPER.readTree(
+                stream.substring(frameStart + 5, frameEnd));
+    }
+
+    private String dataFrameContent(String stream) throws Exception {
+        StringBuilder content = new StringBuilder();
+        for (String section : stream.split("\n\n")) {
+            int prefix = section.indexOf("data:");
+            if (prefix < 0) {
+                continue;
+            }
+            JsonNode frame = OBJECT_MAPPER.readTree(section.substring(prefix + 5));
+            if (!"DATA".equals(frame.path("returnType").asText())) {
+                continue;
+            }
+            for (JsonNode answer : frame.path("body").path("answer")) {
+                content.append(answer.path("content").asText());
+            }
+        }
+        return content.toString();
     }
 
     private JsonNode firstFrameBody(String stream) throws Exception {

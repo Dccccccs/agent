@@ -52,7 +52,7 @@ public class FilteredStreamFrameAssembler {
             case FALLBACK:
                 return FilteredStreamFrame.fallback();
             case DONE:
-                return FilteredStreamFrame.done();
+                return FilteredStreamFrame.done(event.getOriginContent());
             default:
                 throw new IllegalArgumentException("未知流事件类型");
         }

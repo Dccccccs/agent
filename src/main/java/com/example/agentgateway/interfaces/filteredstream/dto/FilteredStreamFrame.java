@@ -29,4 +29,16 @@ public class FilteredStreamFrame {
     public static FilteredStreamFrame done() {
         return FilteredStreamFrame.builder().returnType("DONE").build();
     }
+
+    public static FilteredStreamFrame done(String originContent) {
+        if (originContent == null) {
+            return done();
+        }
+        return FilteredStreamFrame.builder()
+                .body(FilteredStreamFrameBody.builder()
+                        .originContent(originContent)
+                        .build())
+                .returnType("DONE")
+                .build();
+    }
 }

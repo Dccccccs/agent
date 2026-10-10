@@ -81,120 +81,8 @@ public class StreamingContentProcessor {
         int urlCountInInputFrame = 0;
 
         for (int index = 0; index < input.length(); index++) {
-            char character = input.charAt(index);
-            switch (state) {
-                case TEXT:
-                    // 结构标记优先于敏感词规则；遇到结构起始符时先结束当前
-                    // 敏感词判断，再切换到对应的跨帧状态。
-                    if (character == '<') {
-                        flushSensitiveLiteral(textOutput);
-                        state = StreamingContentState.TAG_CANDIDATE;
-                        structuredBuffer.setLength(0);
-                        structuredBuffer.append(character);
-                    } else {
-                        feedSensitive(character, textOutput);
-                    }
-                    break;
-                case TAG_CANDIDATE:
-                    structuredBuffer.append(character);
-                    String candidate = structuredBuffer.toString();
-                    if (URL_PREFIX.equals(candidate)) {
-                        state = StreamingContentState.URL;
-                    } else if (CARD_PREFIX.equals(candidate)) {
-                        state = StreamingContentState.CARD;
-                    } else if (FUND_ITEM_PREFIX.equals(candidate)) {
-                        state = StreamingContentState.FUND_ITEM;
-                    } else if (!URL_PREFIX.startsWith(candidate)
-                            && !CARD_PREFIX.startsWith(candidate)
-                            && !FUND_ITEM_PREFIX.startsWith(candidate)) {
-                        // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
-                        state = StreamingContentState.TEXT;
-                        feedOrdinaryText(candidate, textOutput);
-                        structuredBuffer.setLength(0);
-                    }
-                    break;
-                case CARD:
-                    structuredBuffer.append(character);
-                    ensureStructuredLength();
-                    if (endsWith(structuredBuffer, "/>")) {
-                        flushText(textOutput, currentBlocks);
-                        currentBlocks.add(resolveCard(structuredBuffer.toString()));
-                        structuredBuffer.setLength(0);
-                        state = StreamingContentState.TEXT;
-                    }
-                    break;
-                case URL:
-                    structuredBuffer.append(character);
-                    ensureStructuredLength();
-                    if (endsWith(structuredBuffer, "/>")) {
-                        urlCountInInputFrame++;
-                        if (urlCountInInputFrame > 1) {
-                            throw fail("同一个上游帧中不允许包含多个 <url> 标签");
-                        }
-                        flushText(textOutput, currentBlocks);
-                        currentBlocks.add(resolveLink(structuredBuffer.toString()));
-                        structuredBuffer.setLength(0);
-                        state = StreamingContentState.TEXT;
-                    }
-                    break;
-                case FUND_ITEM:
-                    structuredBuffer.append(character);
-                    ensureStructuredLength();
-                    if (endsWith(structuredBuffer, "/>")) {
-                        flushText(textOutput, currentBlocks);
-                        addFundToCurrentGroup(structuredBuffer.toString());
-                        structuredBuffer.setLength(0);
-                        fundGroupGapBuffer.setLength(0);
-                        state = StreamingContentState.FUND_GROUP_GAP;
-                    }
-                    break;
-                case FUND_GROUP_GAP:
-                    if (Character.isWhitespace(character)) {
-                        fundGroupGapBuffer.append(character);
-                    } else if (character == '<') {
-                        structuredBuffer.setLength(0);
-                        structuredBuffer.append(character);
-                        state = StreamingContentState.FUND_GROUP_CANDIDATE;
-                    } else {
-                        flushFundGroup(currentBlocks);
-                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-                        fundGroupGapBuffer.setLength(0);
-                        feedSensitive(character, textOutput);
-                        state = StreamingContentState.TEXT;
-                    }
-                    break;
-                case FUND_GROUP_CANDIDATE:
-                    structuredBuffer.append(character);
-                    ensureStructuredLength();
-                    String groupCandidate = structuredBuffer.toString();
-                    if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
-                        // 标签之间的空白只是模型排版，不属于最终卡片正文。
-                        fundGroupGapBuffer.setLength(0);
-                        state = StreamingContentState.FUND_ITEM;
-                    } else if (URL_PREFIX.equals(groupCandidate)) {
-                        flushFundGroup(currentBlocks);
-                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-                        fundGroupGapBuffer.setLength(0);
-                        state = StreamingContentState.URL;
-                    } else if (CARD_PREFIX.equals(groupCandidate)) {
-                        flushFundGroup(currentBlocks);
-                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-                        fundGroupGapBuffer.setLength(0);
-                        state = StreamingContentState.CARD;
-                    } else if (!FUND_ITEM_PREFIX.startsWith(groupCandidate)
-                            && !URL_PREFIX.startsWith(groupCandidate)
-                            && !CARD_PREFIX.startsWith(groupCandidate)) {
-                        flushFundGroup(currentBlocks);
-                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-                        feedOrdinaryText(groupCandidate, textOutput);
-                        fundGroupGapBuffer.setLength(0);
-                        structuredBuffer.setLength(0);
-                        state = StreamingContentState.TEXT;
-                    }
-                    break;
-                default:
-                    throw new IllegalStateException("未知流处理状态");
-            }
+            urlCountInInputFrame = processCharacter(input.charAt(index),
+                    textOutput, currentBlocks, urlCountInInputFrame);
         }
 
         flushText(textOutput, currentBlocks);
@@ -205,6 +93,170 @@ public class StreamingContentProcessor {
             return Collections.emptyList();
         }
         return releaseHeldBlocks();
+    }
+
+    private int processCharacter(char character,
+                                 StringBuilder textOutput,
+                                 List<ProcessedContentBlock> currentBlocks,
+                                 int urlCountInInputFrame) {
+        switch (state) {
+            case TEXT:
+                processTextCharacter(character, textOutput);
+                break;
+            case TAG_CANDIDATE:
+                processTagCandidateCharacter(character, textOutput);
+                break;
+            case CARD:
+                processCardCharacter(character, textOutput, currentBlocks);
+                break;
+            case URL:
+                return processUrlCharacter(character, textOutput,
+                        currentBlocks, urlCountInInputFrame);
+            case FUND_ITEM:
+                processFundItemCharacter(character, textOutput, currentBlocks);
+                break;
+            case FUND_GROUP_GAP:
+                processFundGroupGapCharacter(character, textOutput, currentBlocks);
+                break;
+            case FUND_GROUP_CANDIDATE:
+                processFundGroupCandidateCharacter(character, textOutput,
+                        currentBlocks);
+                break;
+            default:
+                throw new IllegalStateException("未知流处理状态");
+        }
+        return urlCountInInputFrame;
+    }
+
+    private void processTextCharacter(char character, StringBuilder textOutput) {
+        // 结构标记优先于敏感词规则；遇到结构起始符时先结束当前
+        // 敏感词判断，再切换到对应的跨帧状态。
+        if (character == '<') {
+            flushSensitiveLiteral(textOutput);
+            state = StreamingContentState.TAG_CANDIDATE;
+            structuredBuffer.setLength(0);
+            structuredBuffer.append(character);
+        } else {
+            feedSensitive(character, textOutput);
+        }
+    }
+
+    private void processTagCandidateCharacter(char character,
+                                              StringBuilder textOutput) {
+        structuredBuffer.append(character);
+        String candidate = structuredBuffer.toString();
+        if (URL_PREFIX.equals(candidate)) {
+            state = StreamingContentState.URL;
+        } else if (CARD_PREFIX.equals(candidate)) {
+            state = StreamingContentState.CARD;
+        } else if (FUND_ITEM_PREFIX.equals(candidate)) {
+            state = StreamingContentState.FUND_ITEM;
+        } else if (!URL_PREFIX.startsWith(candidate)
+                && !CARD_PREFIX.startsWith(candidate)
+                && !FUND_ITEM_PREFIX.startsWith(candidate)) {
+            // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
+            state = StreamingContentState.TEXT;
+            feedOrdinaryText(candidate, textOutput);
+            structuredBuffer.setLength(0);
+        }
+    }
+
+    private void processCardCharacter(char character,
+                                      StringBuilder textOutput,
+                                      List<ProcessedContentBlock> currentBlocks) {
+        structuredBuffer.append(character);
+        ensureStructuredLength();
+        if (endsWith(structuredBuffer, "/>")) {
+            flushText(textOutput, currentBlocks);
+            currentBlocks.add(resolveCard(structuredBuffer.toString()));
+            structuredBuffer.setLength(0);
+            state = StreamingContentState.TEXT;
+        }
+    }
+
+    private int processUrlCharacter(char character,
+                                    StringBuilder textOutput,
+                                    List<ProcessedContentBlock> currentBlocks,
+                                    int urlCountInInputFrame) {
+        structuredBuffer.append(character);
+        ensureStructuredLength();
+        if (!endsWith(structuredBuffer, "/>")) {
+            return urlCountInInputFrame;
+        }
+        int completedUrlCount = urlCountInInputFrame + 1;
+        if (completedUrlCount > 1) {
+            throw fail("同一个上游帧中不允许包含多个 <url> 标签");
+        }
+        flushText(textOutput, currentBlocks);
+        currentBlocks.add(resolveLink(structuredBuffer.toString()));
+        structuredBuffer.setLength(0);
+        state = StreamingContentState.TEXT;
+        return completedUrlCount;
+    }
+
+    private void processFundItemCharacter(char character,
+                                          StringBuilder textOutput,
+                                          List<ProcessedContentBlock> currentBlocks) {
+        structuredBuffer.append(character);
+        ensureStructuredLength();
+        if (endsWith(structuredBuffer, "/>")) {
+            flushText(textOutput, currentBlocks);
+            addFundToCurrentGroup(structuredBuffer.toString());
+            structuredBuffer.setLength(0);
+            fundGroupGapBuffer.setLength(0);
+            state = StreamingContentState.FUND_GROUP_GAP;
+        }
+    }
+
+    private void processFundGroupGapCharacter(char character,
+                                              StringBuilder textOutput,
+                                              List<ProcessedContentBlock> currentBlocks) {
+        if (Character.isWhitespace(character)) {
+            fundGroupGapBuffer.append(character);
+        } else if (character == '<') {
+            structuredBuffer.setLength(0);
+            structuredBuffer.append(character);
+            state = StreamingContentState.FUND_GROUP_CANDIDATE;
+        } else {
+            flushFundGroup(currentBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            fundGroupGapBuffer.setLength(0);
+            feedSensitive(character, textOutput);
+            state = StreamingContentState.TEXT;
+        }
+    }
+
+    private void processFundGroupCandidateCharacter(
+            char character,
+            StringBuilder textOutput,
+            List<ProcessedContentBlock> currentBlocks) {
+        structuredBuffer.append(character);
+        ensureStructuredLength();
+        String groupCandidate = structuredBuffer.toString();
+        if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
+            // 标签之间的空白只是模型排版，不属于最终卡片正文。
+            fundGroupGapBuffer.setLength(0);
+            state = StreamingContentState.FUND_ITEM;
+        } else if (URL_PREFIX.equals(groupCandidate)) {
+            flushFundGroup(currentBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            fundGroupGapBuffer.setLength(0);
+            state = StreamingContentState.URL;
+        } else if (CARD_PREFIX.equals(groupCandidate)) {
+            flushFundGroup(currentBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            fundGroupGapBuffer.setLength(0);
+            state = StreamingContentState.CARD;
+        } else if (!FUND_ITEM_PREFIX.startsWith(groupCandidate)
+                && !URL_PREFIX.startsWith(groupCandidate)
+                && !CARD_PREFIX.startsWith(groupCandidate)) {
+            flushFundGroup(currentBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            feedOrdinaryText(groupCandidate, textOutput);
+            fundGroupGapBuffer.setLength(0);
+            structuredBuffer.setLength(0);
+            state = StreamingContentState.TEXT;
+        }
     }
 
     /**
