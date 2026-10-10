@@ -292,6 +292,24 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
+    void shouldExtractFundListFromActualMetadataContent() {
+        UpstreamStreamFrame frame = converter.convert(
+                "{\"status\":\"METADATA\",\"content\":"
+                        + "\"{\\\"status\\\":\\\"NORMAL\\\","
+                        + "\\\"fundList\\\":[{"
+                        + "\\\"fundId\\\":\\\"000001\\\","
+                        + "\\\"fundName\\\":\\\"基金一\\\","
+                        + "\\\"fundDesc\\\":\\\"基金一描述\\\"}]}\"}");
+
+        assertTrue(frame.getMetadata());
+        assertEquals(1, frame.getMetadataContent().getFundList().size());
+        assertEquals("000001",
+                frame.getMetadataContent().getFundList().get(0).getFundId());
+        assertEquals("基金一",
+                frame.getMetadataContent().getFundList().get(0).getFundName());
+    }
+
+    @Test
     void shouldReadOnlyIncrementalContentFromActualMiddleFrame() {
         // 【真实中间帧结构模拟】只读取本帧 content；fullContent 和
         // messageContent 即使存在也不会被重复输出。

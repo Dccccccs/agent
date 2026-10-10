@@ -4,6 +4,7 @@ import com.example.agentgateway.application.filteredstream.UpstreamFrameExceptio
 import com.example.agentgateway.application.filteredstream.model.UpstreamStreamFrame;
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
+import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
 import com.example.agentgateway.domain.filteredstream.ProcessedCardMapping;
@@ -210,6 +211,7 @@ public class UpstreamStreamFrameConverter {
             return StreamMetadata.builder()
                     .linkMapping(new ArrayList<LinkDefinition>())
                     .cardMapping(new ArrayList<CardDefinition>())
+                    .fundList(new ArrayList<FundDefinition>())
                     .fallbackAnswer(fallbackAnswer)
                     .status(MetadataStatus.FALLBACK)
                     .build();
@@ -217,6 +219,7 @@ public class UpstreamStreamFrameConverter {
         return StreamMetadata.builder()
                 .linkMapping(extractLinks(metadataBody))
                 .cardMapping(extractCards(metadataBody))
+                .fundList(extractFunds(metadataBody))
                 .suggestedQuery(extractSuggestedQueries(metadataBody))
                 .fallbackAnswer(fallbackAnswer)
                 .status(MetadataStatus.NORMAL)
@@ -485,6 +488,33 @@ public class UpstreamStreamFrameConverter {
         return false;
     }
 
+    /** 将首帧 fundList 转为领域基金对象，字段完整性由领域层统一校验。 */
+    private List<FundDefinition> extractFunds(JsonNode metadataBody) {
+        List<FundDefinition> result = new ArrayList<FundDefinition>();
+        if (metadataBody == null || !metadataBody.isObject()) {
+            return result;
+        }
+        JsonNode fundList = metadataBody.path("fundList");
+        if (fundList.isMissingNode() || fundList.isNull()) {
+            return result;
+        }
+        if (!fundList.isArray()) {
+            throw new UpstreamFrameException("Metadata.fundList 必须是数组");
+        }
+        for (JsonNode item : fundList) {
+            if (!item.isObject()) {
+                throw new UpstreamFrameException(
+                        "Metadata.fundList 元素必须是对象");
+            }
+            result.add(FundDefinition.builder()
+                    .fundId(firstText(item.path("fundId")))
+                    .fundName(firstText(item.path("fundName")))
+                    .fundDesc(firstText(item.path("fundDesc")))
+                    .build());
+        }
+        return result;
+    }
+
     private String normalizeCardPlaceholder(String placeholder) {
         if (placeholder == null) {
             return null;
@@ -511,7 +541,8 @@ public class UpstreamStreamFrameConverter {
                 || body.has("recordId")
                 || body.has("status")
                 || body.has("linkMapping")
-                || body.has("cardMapping");
+                || body.has("cardMapping")
+                || body.has("fundList");
     }
 
     private boolean isBlank(String value) {

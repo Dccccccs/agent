@@ -85,12 +85,13 @@ public class FilteredStreamFrameAssembler {
             for (MetadataOutputCustomizer customizer : metadataCustomizers) {
                 customizer.customize((ObjectNode) body);
             }
-            // 这三个字段只供内部规则处理：链接和卡片信息保留在强类型
+            // 这些字段只供内部规则处理：链接、卡片和基金信息保留在强类型
             // StreamMetadata 中，推荐问延迟到 DONE 前的独立 METADATA 帧。
             // 删除发生在定制器之后，避免定制器意外将内部字段重新带回首帧。
             ((ObjectNode) body).remove(
                     Arrays.asList(
-                            "linkMapping", "cardMapping", "suggestedQuery"));
+                            "linkMapping", "cardMapping", "fundList",
+                            "suggestedQuery"));
             // 客户端在首帧即可拿到完整兜底回答；后续 FALLBACK 帧只发送
             // 类型通知，不再重复发送答案内容。
             ((ObjectNode) body).set("fallbackAnswer",

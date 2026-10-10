@@ -22,6 +22,9 @@ public class StreamMetadata {
     private final List<LinkDefinition> linkMapping;
     @Singular(value = "card", ignoreNullCollections = true)
     private final List<CardDefinition> cardMapping;
+    /** 首帧 content.fundList 中可供正文 li 标签引用的基金。 */
+    @Singular(value = "fund", ignoreNullCollections = true)
+    private final List<FundDefinition> fundList;
     /** 首帧暂存的推荐问，流结束前与接口动态构建的推荐问合并输出。 */
     @Singular(value = "suggestion", ignoreNullCollections = true)
     private final List<SuggestedQueryDefinition> suggestedQuery;
@@ -54,6 +57,15 @@ public class StreamMetadata {
         for (CardDefinition card : cardMapping) {
             if (card.getCardPlaceHolder().equals(placeholder)) {
                 return Optional.of(card);
+            }
+        }
+        return Optional.empty();
+    }
+
+    public Optional<FundDefinition> findFund(String fundId) {
+        for (FundDefinition fund : fundList) {
+            if (fund.getFundId().equals(fundId)) {
+                return Optional.of(fund);
             }
         }
         return Optional.empty();

@@ -11,6 +11,7 @@ import com.example.agentgateway.application.filteredstream.port.ExternalModelStr
 import com.example.agentgateway.application.filteredstream.port.FilteredStreamFallbackProvider;
 import com.example.agentgateway.application.filteredstream.port.FilteredStreamMessageIdGenerator;
 import com.example.agentgateway.application.filteredstream.port.FilteredStreamRequestValidator;
+import com.example.agentgateway.application.filteredstream.port.FundCardPort;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
@@ -21,6 +22,8 @@ import com.example.agentgateway.application.dto.AixzChatRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +44,7 @@ public class FilteredStreamService {
     private final FilteredStreamFallbackProvider fallbackProvider;
     private final RecommendationQueryAssembler recommendationQueryAssembler;
     private final FilteredStreamMessageIdGenerator messageIdGenerator;
+    private final FundCardPort fundCardPort;
 
     public FilteredStreamService(
             ExternalModelStreamPort externalModelStreamPort,
@@ -48,13 +52,15 @@ public class FilteredStreamService {
             FilteredStreamRequestValidator requestValidator,
             FilteredStreamFallbackProvider fallbackProvider,
             RecommendationQueryAssembler recommendationQueryAssembler,
-            FilteredStreamMessageIdGenerator messageIdGenerator) {
+            FilteredStreamMessageIdGenerator messageIdGenerator,
+            FundCardPort fundCardPort) {
         this.externalModelStreamPort = externalModelStreamPort;
         this.processorFactory = processorFactory;
         this.requestValidator = requestValidator;
         this.fallbackProvider = fallbackProvider;
         this.recommendationQueryAssembler = recommendationQueryAssembler;
         this.messageIdGenerator = messageIdGenerator;
+        this.fundCardPort = fundCardPort;
     }
 
     /**
@@ -128,7 +134,9 @@ public class FilteredStreamService {
                     .takeUntil(frame -> Boolean.TRUE.equals(frame.getMetadata())
                             && frame.getMetadataContent().requestsFallback())
                     // concatMap 保证上游帧严格串行处理，不能用 flatMap 打乱顺序。
-                    .concatMap(frame -> processFrame(context, frame))
+                    // prefetch=1 使卡片 API 调用期间向上游施加背压，避免后续
+                    // 模型帧在内存中大量排队。
+                    .concatMap(frame -> processFrame(context, frame), 1)
                     // 正常完成时刷出缓存、推荐问和 DONE；主动兜底时只补 DONE。
                     .concatWith(Flux.defer(() -> finishStream(context)))
                     .onErrorResume(throwable -> {
@@ -258,16 +266,17 @@ public class FilteredStreamService {
             // 至少存在一帧 DATA/FALLBACK，而不是直接从 METADATA 跳到 DONE。
             return fallbackThenDone(true, context.getRecordId());
         }
-        List<FilteredStreamEvent> events = new ArrayList<FilteredStreamEvent>();
         List<ProcessedContentBlock> finalBlocks =
                 context.getProcessor().finish();
-        if (!finalBlocks.isEmpty()) {
-            context.markContentProduced();
-        }
-        for (ProcessedContentBlock block : finalBlocks) {
-            events.add(FilteredStreamEvent.content(block));
-        }
+        return eventsForBlocks(context, finalBlocks)
+                // 同步卡片请求在阻塞任务线程池中执行；只有最后一批内容（包括卡片）全部输出后，
+                // 才能判断是否需要兜底并追加推荐问、DONE。
+                .concatWith(Flux.defer(() -> finishAfterContent(context)));
+    }
 
+    private Flux<FilteredStreamEvent> finishAfterContent(
+            FilteredStreamProcessingContext context) {
+        List<FilteredStreamEvent> events = new ArrayList<FilteredStreamEvent>();
         if (!context.hasContentProduced()) {
             // 上游只有 Metadata、没有任何可输出正文时，使用 FALLBACK 补齐
             // METADATA -> DATA/FALLBACK -> DONE 的完整序列。
@@ -328,14 +337,23 @@ public class FilteredStreamService {
     private Flux<FilteredStreamEvent> eventsForBlocks(
             FilteredStreamProcessingContext context,
             List<ProcessedContentBlock> blocks) {
-        if (!blocks.isEmpty()) {
-            context.markContentProduced();
+        return Flux.fromIterable(blocks)
+                // prefetch=1：等待卡片 API 时不主动积压大量后续内部块。
+                .concatMap(this::toContentEvent, 1)
+                .doOnNext(ignored -> context.markContentProduced());
+    }
+
+    private Mono<FilteredStreamEvent> toContentEvent(
+            ProcessedContentBlock block) {
+        if (!block.isFundCardGroup()) {
+            return Mono.just(FilteredStreamEvent.content(block));
         }
-        List<FilteredStreamEvent> events = new ArrayList<FilteredStreamEvent>();
-        for (ProcessedContentBlock block : blocks) {
-            events.add(FilteredStreamEvent.content(block));
-        }
-        return Flux.fromIterable(events);
+        // RestTemplate 是阻塞调用；放在 boundedElastic 上执行，避免阻塞
+        // 上游 WebClient 的事件线程，同时保留 concatMap 的顺序和异常兜底。
+        return Mono.fromCallable(() -> fundCardPort.createCard(block.getFundList()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(ProcessedContentBlock::generatedFundCard)
+                .map(FilteredStreamEvent::content);
     }
 
     private void validateMetadataPosition(

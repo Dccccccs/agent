@@ -2,6 +2,7 @@ package com.example.agentgateway;
 
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
+import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.StreamContentProcessingException;
@@ -268,6 +269,103 @@ class StreamingContentProcessorTest {
     }
 
     @Test
+    void shouldCollectContinuousFundItemsAcrossFrames() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fund(fund("000001", "基金一"))
+                .fund(fund("000002", "基金二"))
+                .build());
+
+        assertTrue(fundProcessor.accept(
+                "前文<li id=\"000").isEmpty());
+        assertTrue(fundProcessor.accept(
+                "001\" text=\"\" />\n<li id=\"000002\"").isEmpty());
+        List<ProcessedContentBlock> blocks = fundProcessor.accept(
+                " text=\"模型描述\" />后文");
+
+        assertEquals(3, blocks.size());
+        assertEquals("前文", blocks.get(0).getContent());
+        assertTrue(blocks.get(1).isFundCardGroup());
+        assertEquals(2, blocks.get(1).getFundList().size());
+        assertEquals("000001",
+                blocks.get(1).getFundList().get(0).getFundId());
+        assertEquals("", blocks.get(1).getFundList().get(0).getFundDesc());
+        assertEquals("000002",
+                blocks.get(1).getFundList().get(1).getFundId());
+        assertEquals("模型描述",
+                blocks.get(1).getFundList().get(1).getFundDesc());
+        assertEquals("后文", blocks.get(2).getContent());
+    }
+
+    @Test
+    void shouldKeepMetadataFundDescriptionWhenTextAttributeIsAbsent() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fund(fund("000001", "基金一"))
+                .build());
+
+        assertTrue(fundProcessor.accept(
+                "<li id=\"000001\" />").isEmpty());
+        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+
+        assertEquals(1, blocks.size());
+        assertTrue(blocks.get(0).isFundCardGroup());
+        assertEquals("基金一描述",
+                blocks.get(0).getFundList().get(0).getFundDesc());
+    }
+
+    @Test
+    void shouldFlushFundGroupWhenStreamEndsImmediatelyAfterLastItem() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fund(fund("000001", "基金一"))
+                .build());
+
+        assertTrue(fundProcessor.accept(
+                "<li id=\"000001\" text=\"模型描述\" />").isEmpty());
+
+        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+
+        assertEquals(1, blocks.size());
+        assertTrue(blocks.get(0).isFundCardGroup());
+        assertEquals("000001", blocks.get(0).getFundList().get(0).getFundId());
+    }
+
+    @Test
+    void shouldDeduplicateFundsWithinOneContinuousGroup() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fund(fund("000001", "基金一"))
+                .build());
+
+        fundProcessor.accept("<li id=\"000001\" text=\"\" />"
+                + "<li id=\"000001\" text=\"重复\" />");
+        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+
+        assertEquals(1, blocks.size());
+        assertTrue(blocks.get(0).isFundCardGroup());
+        assertEquals(1, blocks.get(0).getFundList().size());
+    }
+
+    @Test
+    void shouldRejectFundItemNotDeclaredInMetadata() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.empty());
+
+        StreamContentProcessingException exception = assertThrows(
+                StreamContentProcessingException.class,
+                () -> fundProcessor.accept(
+                        "<li id=\"999999\" text=\"未知基金\" />"));
+
+        assertTrue(exception.getMessage().contains("fundList"));
+    }
+
+    @Test
     void shouldKeepHouseviewMarkupAsText() {
         List<ProcessedContentBlock> result = processor.accept(
                 "<Houseview>普通内容</Houseview>");
@@ -290,6 +388,14 @@ class StreamingContentProcessorTest {
         return LinkDefinition.builder()
                 .linkId(id)
                 .linkContent(content)
+                .build();
+    }
+
+    private FundDefinition fund(String id, String name) {
+        return FundDefinition.builder()
+                .fundId(id)
+                .fundName(name)
+                .fundDesc(name + "描述")
                 .build();
     }
 

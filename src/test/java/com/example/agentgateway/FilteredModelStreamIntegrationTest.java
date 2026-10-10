@@ -7,8 +7,11 @@ import com.example.agentgateway.application.filteredstream.UpstreamFrameExceptio
 import com.example.agentgateway.application.filteredstream.port.ExternalModelStreamPort;
 import com.example.agentgateway.application.filteredstream.port.FilteredStreamMessageIdGenerator;
 import com.example.agentgateway.application.filteredstream.port.FilteredStreamRequestValidator;
+import com.example.agentgateway.application.filteredstream.port.FundCardPort;
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
+import com.example.agentgateway.domain.filteredstream.FundCard;
+import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
 import com.example.agentgateway.domain.filteredstream.ProcessedCardMapping;
@@ -71,6 +74,9 @@ class FilteredModelStreamIntegrationTest {
 
     @MockBean
     private FilteredStreamMessageIdGenerator messageIdGenerator;
+
+    @MockBean
+    private FundCardPort fundCardPort;
 
     @BeforeEach
     void stubExternalModelApi() {
@@ -457,6 +463,118 @@ class FilteredModelStreamIntegrationTest {
                         "\"returnType\":\"FALLBACK\"")))
                 .andExpect(content().string(containsString(
                         "\"returnType\":\"DONE\"")))
+                .andReturn();
+
+        assertFallbackBeforeDone(result);
+    }
+
+    @Test
+    void shouldReplaceContinuousFundItemsWithOneGeneratedCard()
+            throws Exception {
+        String metadataJson = "{\"body\":{\"status\":\"NORMAL\","
+                + "\"fundList\":["
+                + "{\"fundId\":\"000001\",\"fundName\":\"基金一\","
+                + "\"fundDesc\":\"基金一描述\"},"
+                + "{\"fundId\":\"000002\",\"fundName\":\"基金二\","
+                + "\"fundDesc\":\"基金二描述\"}]},"
+                + "\"returnType\":\"METADATA\"}";
+        StreamMetadata metadata = StreamMetadata.builder()
+                .fund(FundDefinition.builder()
+                        .fundId("000001")
+                        .fundName("基金一")
+                        .fundDesc("基金一描述")
+                        .build())
+                .fund(FundDefinition.builder()
+                        .fundId("000002")
+                        .fundName("基金二")
+                        .fundDesc("基金二描述")
+                        .build())
+                .status(MetadataStatus.NORMAL)
+                .build();
+        when(fundCardPort.createCard(argThat(funds ->
+                funds != null && funds.size() == 2
+                        && "000001".equals(funds.get(0).getFundId())
+                        && "".equals(funds.get(0).getFundDesc())
+                        && "000002".equals(funds.get(1).getFundId())
+                        && "描述".equals(funds.get(1).getFundDesc()))))
+                .thenReturn(FundCard.builder()
+                        .cardId("card_combined_001")
+                        .htmlContent("<div>组合基金卡片</div>")
+                        .build());
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadataJson, metadata),
+                        UpstreamStreamFrame.content(
+                                "前文<li id=\"000001\" text=\""),
+                        UpstreamStreamFrame.content(
+                                "\" />\n<li id=\"000002\" text=\"描述\" />"),
+                        UpstreamStreamFrame.content("后文")));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"fund-card-group\","
+                        + "\"uid\":\"u-1\",\"question\":\"基金组合\"}"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("前文")))
+                .andExpect(content().string(containsString(
+                        "<m-card id='card_combined_001' />")))
+                .andExpect(content().string(containsString(
+                        "\"cardId\":\"card_combined_001\"")))
+                .andExpect(content().string(containsString(
+                        "<div>组合基金卡片</div>")))
+                .andExpect(content().string(containsString("后文")))
+                .andExpect(content().string(not(containsString(
+                        "\"fundList\""))))
+                .andExpect(content().string(not(containsString(
+                        "<li id="))))
+                .andExpect(content().string(containsString(
+                        "\"returnType\":\"DONE\"")))
+                .andReturn();
+
+        String stream = result.getResponse().getContentAsString();
+        org.junit.jupiter.api.Assertions.assertTrue(
+                stream.indexOf("前文") < stream.indexOf("card_combined_001"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                stream.indexOf("card_combined_001") < stream.indexOf("后文"));
+    }
+
+    @Test
+    void shouldFallbackWhenFundCardApiFails() throws Exception {
+        String metadataJson = "{\"body\":{\"status\":\"NORMAL\","
+                + "\"fundList\":[{\"fundId\":\"000001\","
+                + "\"fundName\":\"基金一\",\"fundDesc\":\"描述\"}]},"
+                + "\"returnType\":\"METADATA\"}";
+        StreamMetadata metadata = StreamMetadata.builder()
+                .fund(FundDefinition.builder()
+                        .fundId("000001")
+                        .fundName("基金一")
+                        .fundDesc("描述")
+                        .build())
+                .status(MetadataStatus.NORMAL)
+                .build();
+        when(fundCardPort.createCard(any()))
+                .thenThrow(new IllegalStateException("卡片服务异常"));
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadataJson, metadata),
+                        UpstreamStreamFrame.content(
+                                "<li id=\"000001\" text=\"\" />正文")));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"fund-card-error\","
+                        + "\"uid\":\"u-1\",\"question\":\"基金组合\"}"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(
+                        "\"returnType\":\"METADATA\"")))
+                .andExpect(content().string(containsString(
+                        "\"returnType\":\"FALLBACK\"")))
+                .andExpect(content().string(containsString(
+                        "\"returnType\":\"DONE\"")))
+                .andExpect(content().string(not(containsString(
+                        "卡片服务异常"))))
                 .andReturn();
 
         assertFallbackBeforeDone(result);

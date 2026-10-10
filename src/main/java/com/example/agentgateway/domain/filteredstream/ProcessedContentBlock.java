@@ -12,6 +12,8 @@ import java.util.List;
 public class ProcessedContentBlock {
     public static final String TYPE_TEXT = "text";
     public static final String TYPE_CARD = "card";
+    /** 仅在应用层内部流转，不会直接装配为下游 DATA 帧。 */
+    public static final String TYPE_FUND_CARD_GROUP = "fund-card-group";
 
     private final String type;
     private final String content;
@@ -19,6 +21,7 @@ public class ProcessedContentBlock {
     // 错配到其他 DATA 帧。
     private final List<ProcessedLinkMapping> linkMapping;
     private final List<ProcessedCardMapping> cardMapping;
+    private final List<FundDefinition> fundList;
 
     public static ProcessedContentBlock text(String content) {
         return ProcessedContentBlock.builder()
@@ -26,6 +29,7 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
+                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
@@ -40,6 +44,7 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(immutableCopy(mappings))
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
+                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
@@ -54,7 +59,39 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(immutableCopy(mappings))
+                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
+    }
+
+    public static ProcessedContentBlock fundCardGroup(
+            List<FundDefinition> funds) {
+        return ProcessedContentBlock.builder()
+                .type(TYPE_FUND_CARD_GROUP)
+                .content("")
+                .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
+                .cardMapping(Collections.<ProcessedCardMapping>emptyList())
+                .fundList(immutableCopy(funds))
+                .build();
+    }
+
+    public static ProcessedContentBlock generatedFundCard(FundCard card) {
+        List<ProcessedCardMapping> mappings = Collections.singletonList(
+                ProcessedCardMapping.builder()
+                        .cardId(card.getCardId())
+                        .htmlContent(card.getHtmlContent())
+                        .build());
+        return ProcessedContentBlock.builder()
+                .type(TYPE_CARD)
+                .content("<m-card id='" + escapeAttribute(card.getCardId())
+                        + "' />")
+                .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
+                .cardMapping(immutableCopy(mappings))
+                .fundList(Collections.<FundDefinition>emptyList())
+                .build();
+    }
+
+    public boolean isFundCardGroup() {
+        return TYPE_FUND_CARD_GROUP.equals(type);
     }
 
     public ProcessedContentBlock mergeText(ProcessedContentBlock other) {
@@ -70,12 +107,20 @@ public class ProcessedContentBlock {
                 .content(content + other.content)
                 .linkMapping(immutableCopy(mappings))
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
+                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
     private static <T> List<T> immutableCopy(List<T> source) {
         // 处理结果发布后不允许再修改，避免异步发送期间出现内容漂移。
         return Collections.unmodifiableList(new ArrayList<T>(source));
+    }
+
+    private static String escapeAttribute(String value) {
+        return value.replace("&", "&amp;")
+                .replace("'", "&#39;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
 }

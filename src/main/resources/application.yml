@@ -8,6 +8,10 @@ filtered-stream:
     card-mapping: []
   upstream:
     url: http://localhost:18080/api/v1/chat/stream
+  # 临时组合基金卡片 API 契约，后续只需替换地址及基础设施 DTO/Converter。
+  card-api:
+    url: http://localhost:18081/api/v1/fund/card
+    timeout-millis: 3000
   validation:
     blocked-keywords: []
     refusal-message: 请求内容未通过校验

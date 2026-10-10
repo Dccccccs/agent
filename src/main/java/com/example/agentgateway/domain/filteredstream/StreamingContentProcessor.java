@@ -16,6 +16,7 @@ import java.util.regex.Pattern;
 public class StreamingContentProcessor {
     private static final String URL_PREFIX = "<url";
     private static final String CARD_PREFIX = "<m-card";
+    private static final String FUND_ITEM_PREFIX = "<li";
     private static final int MAX_STRUCTURED_CONTENT_LENGTH = 8192;
     private static final Pattern CARD_PLACEHOLDER_PATTERN = Pattern.compile(
             "^card_[A-Za-z0-9_-]+$");
@@ -25,12 +26,19 @@ public class StreamingContentProcessor {
     private static final Pattern LINK_URL_PATTERN = Pattern.compile(
             "^<url\\s+id\\s*=\\s*\"([^\"]+)\"\\s+text\\s*=\\s*\"([^\"]*)\"\\s*/>$",
             Pattern.DOTALL);
+    private static final Pattern FUND_ITEM_PATTERN = Pattern.compile(
+            "^<li\\s+id\\s*=\\s*\"([^\"]+)\""
+                    + "(?:\\s+text\\s*=\\s*\"([^\"]*)\")?\\s*/>$",
+            Pattern.DOTALL);
 
     private final StreamReplacementCatalog catalog;
     private final Map<String, String> sensitiveReplacements;
     private final List<String> sensitiveWords;
     private final StringBuilder sensitiveBuffer = new StringBuilder();
     private final StringBuilder structuredBuffer = new StringBuilder();
+    private final StringBuilder fundGroupGapBuffer = new StringBuilder();
+    private final List<FundDefinition> currentFundGroup =
+            new ArrayList<FundDefinition>();
     // 一旦帧尾仍存在不确定前缀，需要连同本帧已处理文本一起暂存；否则前端
     // 会先看到半截原文，后续无法再完成“合并成一帧”的替换要求。
     private final List<ProcessedContentBlock> heldBlocks =
@@ -94,8 +102,11 @@ public class StreamingContentProcessor {
                         state = StreamingContentState.URL;
                     } else if (CARD_PREFIX.equals(candidate)) {
                         state = StreamingContentState.CARD;
+                    } else if (FUND_ITEM_PREFIX.equals(candidate)) {
+                        state = StreamingContentState.FUND_ITEM;
                     } else if (!URL_PREFIX.startsWith(candidate)
-                            && !CARD_PREFIX.startsWith(candidate)) {
+                            && !CARD_PREFIX.startsWith(candidate)
+                            && !FUND_ITEM_PREFIX.startsWith(candidate)) {
                         // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
                         state = StreamingContentState.TEXT;
                         feedOrdinaryText(candidate, textOutput);
@@ -126,6 +137,61 @@ public class StreamingContentProcessor {
                         state = StreamingContentState.TEXT;
                     }
                     break;
+                case FUND_ITEM:
+                    structuredBuffer.append(character);
+                    ensureStructuredLength();
+                    if (endsWith(structuredBuffer, "/>")) {
+                        flushText(textOutput, currentBlocks);
+                        addFundToCurrentGroup(structuredBuffer.toString());
+                        structuredBuffer.setLength(0);
+                        fundGroupGapBuffer.setLength(0);
+                        state = StreamingContentState.FUND_GROUP_GAP;
+                    }
+                    break;
+                case FUND_GROUP_GAP:
+                    if (Character.isWhitespace(character)) {
+                        fundGroupGapBuffer.append(character);
+                    } else if (character == '<') {
+                        structuredBuffer.setLength(0);
+                        structuredBuffer.append(character);
+                        state = StreamingContentState.FUND_GROUP_CANDIDATE;
+                    } else {
+                        flushFundGroup(currentBlocks);
+                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+                        fundGroupGapBuffer.setLength(0);
+                        feedSensitive(character, textOutput);
+                        state = StreamingContentState.TEXT;
+                    }
+                    break;
+                case FUND_GROUP_CANDIDATE:
+                    structuredBuffer.append(character);
+                    ensureStructuredLength();
+                    String groupCandidate = structuredBuffer.toString();
+                    if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
+                        // 标签之间的空白只是模型排版，不属于最终卡片正文。
+                        fundGroupGapBuffer.setLength(0);
+                        state = StreamingContentState.FUND_ITEM;
+                    } else if (URL_PREFIX.equals(groupCandidate)) {
+                        flushFundGroup(currentBlocks);
+                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+                        fundGroupGapBuffer.setLength(0);
+                        state = StreamingContentState.URL;
+                    } else if (CARD_PREFIX.equals(groupCandidate)) {
+                        flushFundGroup(currentBlocks);
+                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+                        fundGroupGapBuffer.setLength(0);
+                        state = StreamingContentState.CARD;
+                    } else if (!FUND_ITEM_PREFIX.startsWith(groupCandidate)
+                            && !URL_PREFIX.startsWith(groupCandidate)
+                            && !CARD_PREFIX.startsWith(groupCandidate)) {
+                        flushFundGroup(currentBlocks);
+                        feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+                        feedOrdinaryText(groupCandidate, textOutput);
+                        fundGroupGapBuffer.setLength(0);
+                        structuredBuffer.setLength(0);
+                        state = StreamingContentState.TEXT;
+                    }
+                    break;
                 default:
                     throw new IllegalStateException("未知流处理状态");
             }
@@ -152,16 +218,31 @@ public class StreamingContentProcessor {
         if (state == StreamingContentState.URL) {
             throw fail("流结束时存在未闭合的 <url> 标签");
         }
+        if (state == StreamingContentState.FUND_ITEM) {
+            throw fail("流结束时存在未闭合的 <li> 标签");
+        }
 
         StringBuilder textOutput = new StringBuilder();
-        if (state == StreamingContentState.TAG_CANDIDATE) {
+        List<ProcessedContentBlock> finalBlocks =
+                new ArrayList<ProcessedContentBlock>();
+        if (state == StreamingContentState.FUND_GROUP_GAP) {
+            flushFundGroup(finalBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            fundGroupGapBuffer.setLength(0);
+            state = StreamingContentState.TEXT;
+        } else if (state == StreamingContentState.FUND_GROUP_CANDIDATE) {
+            flushFundGroup(finalBlocks);
+            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
+            feedOrdinaryText(structuredBuffer.toString(), textOutput);
+            fundGroupGapBuffer.setLength(0);
+            structuredBuffer.setLength(0);
+            state = StreamingContentState.TEXT;
+        } else if (state == StreamingContentState.TAG_CANDIDATE) {
             feedOrdinaryText(structuredBuffer.toString(), textOutput);
             structuredBuffer.setLength(0);
             state = StreamingContentState.TEXT;
         }
         flushSensitiveLiteral(textOutput);
-        List<ProcessedContentBlock> finalBlocks =
-                new ArrayList<ProcessedContentBlock>();
         flushText(textOutput, finalBlocks);
         appendNormalized(heldBlocks, finalBlocks);
         validateAtMostOneLinkPerTextBlock(heldBlocks);
@@ -241,6 +322,44 @@ public class StreamingContentProcessor {
         String outputTag = "<url id=\"" + escapeAttribute(lookupId)
                 + "\" text=\"" + escapeAttribute(canonicalFundName) + "\"/>";
         return ProcessedContentBlock.link(replaceCompleteText(outputTag), link);
+    }
+
+    private void addFundToCurrentGroup(String tag) {
+        Matcher matcher = FUND_ITEM_PATTERN.matcher(tag);
+        if (!matcher.matches()) {
+            throw fail("非法 <li> 标签: " + tag);
+        }
+        String fundId = matcher.group(1);
+        Optional<FundDefinition> fund = metadata.findFund(fundId);
+        if (!fund.isPresent()) {
+            throw fail("li 中的基金不在 Metadata.fundList 中, fundId=" + fundId);
+        }
+        for (FundDefinition existing : currentFundGroup) {
+            if (existing.getFundId().equals(fundId)) {
+                return;
+            }
+        }
+        FundDefinition metadataFund = fund.get();
+        String text = matcher.group(2);
+        // 没有 text 属性时保留首帧 fundDesc；只要模型显式输出
+        // text（包括空字符串），就以它覆盖本次卡片请求的 fundDesc。
+        if (text == null) {
+            currentFundGroup.add(metadataFund);
+        } else {
+            currentFundGroup.add(FundDefinition.builder()
+                    .fundId(metadataFund.getFundId())
+                    .fundName(metadataFund.getFundName())
+                    .fundDesc(text)
+                    .build());
+        }
+    }
+
+    private void flushFundGroup(List<ProcessedContentBlock> blocks) {
+        if (currentFundGroup.isEmpty()) {
+            throw fail("基金卡片组不能为空");
+        }
+        blocks.add(ProcessedContentBlock.fundCardGroup(currentFundGroup));
+        currentFundGroup.clear();
     }
 
     private void feedOrdinaryText(String text, StringBuilder output) {
@@ -354,7 +473,8 @@ public class StreamingContentProcessor {
     private void appendNormalized(List<ProcessedContentBlock> target,
                                   List<ProcessedContentBlock> source) {
         for (ProcessedContentBlock block : source) {
-            if (block.getContent() == null || block.getContent().isEmpty()) {
+            if (!block.isFundCardGroup()
+                    && (block.getContent() == null || block.getContent().isEmpty())) {
                 continue;
             }
             int lastIndex = target.size() - 1;
@@ -375,7 +495,9 @@ public class StreamingContentProcessor {
         heldBlocks.clear();
         for (ProcessedContentBlock block : released) {
             // 只有实际释放给下游的内容才属于最终答案。
-            transformedAnswer.append(block.getContent());
+            if (!block.isFundCardGroup()) {
+                transformedAnswer.append(block.getContent());
+            }
         }
         return Collections.unmodifiableList(released);
     }
@@ -552,9 +674,30 @@ public class StreamingContentProcessor {
                     .htmlContent(nullToEmpty(card.getHtmlContent()))
                     .build());
         }
+
+        List<FundDefinition> funds = new ArrayList<FundDefinition>();
+        for (FundDefinition fund : source.getFundList()) {
+            if (fund == null || isBlank(fund.getFundId())) {
+                throw new IllegalArgumentException("fundId 不能为空");
+            }
+            if (isBlank(fund.getFundName())) {
+                throw new IllegalArgumentException(
+                        "fundName 不能为空, fundId=" + fund.getFundId());
+            }
+            if (containsFund(funds, fund.getFundId())) {
+                throw new IllegalArgumentException(
+                        "Metadata.fundList 存在重复 fundId: " + fund.getFundId());
+            }
+            funds.add(FundDefinition.builder()
+                    .fundId(fund.getFundId())
+                    .fundName(fund.getFundName())
+                    .fundDesc(nullToEmpty(fund.getFundDesc()))
+                    .build());
+        }
         return StreamMetadata.builder()
                 .linkMapping(Collections.unmodifiableList(links))
                 .cardMapping(Collections.unmodifiableList(cards))
+                .fundList(Collections.unmodifiableList(funds))
                 .fallbackAnswer(source.getFallbackAnswer())
                 .status(source.getStatus())
                 .build();
@@ -574,6 +717,16 @@ public class StreamingContentProcessor {
                                         String placeholder) {
         for (CardDefinition card : cards) {
             if (card.getCardPlaceHolder().equals(placeholder)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsFund(List<FundDefinition> funds,
+                                        String fundId) {
+        for (FundDefinition fund : funds) {
+            if (fund.getFundId().equals(fundId)) {
                 return true;
             }
         }
