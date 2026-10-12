@@ -329,6 +329,49 @@ class FilteredModelStreamIntegrationTest {
     }
 
     @Test
+    void shouldUseMetadataFallbackAnswerAndCancelUpstreamForSplitMarker()
+            throws Exception {
+        AtomicBoolean laterFrameSubscribed = new AtomicBoolean(false);
+        String metadata = "{\"body\":{\"status\":\"NORMAL\"},"
+                + "\"returnType\":\"METADATA\"}";
+        FallbackMessage fallback = FallbackMessage.builder()
+                .content("模型指定兜底话术")
+                .build();
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.concat(
+                        Flux.just(
+                                UpstreamStreamFrame.metadata(metadata,
+                                        StreamMetadata.builder()
+                                                .fallbackAnswer(Collections.singletonList(
+                                                        fallback))
+                                                .build()),
+                                UpstreamStreamFrame.content("已输出。"),
+                                UpstreamStreamFrame.content("待处理<fall"),
+                                UpstreamStreamFrame.content("back />不可见")),
+                        Flux.defer(() -> {
+                            laterFrameSubscribed.set(true);
+                            return Flux.just(UpstreamStreamFrame.content("后续正文"));
+                        })));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"content-fallback\","
+                        + "\"uid\":\"u-1\",\"question\":\"普通问题\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String stream = result.getResponse().getContentAsString();
+        assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertEquals("模型指定兜底话术",
+                firstFrameBody(stream).path("fallbackAnswer").path(0)
+                        .path("content").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("已输出。",
+                dataFrameContent(stream));
+        org.junit.jupiter.api.Assertions.assertFalse(laterFrameSubscribed.get());
+    }
+
+    @Test
     void shouldReturnCardFrameFromCardTag() throws Exception {
         performAsync(post(ENDPOINT)
                 .contentType(MediaType.APPLICATION_JSON)

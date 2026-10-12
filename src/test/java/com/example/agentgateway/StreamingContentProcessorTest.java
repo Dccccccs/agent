@@ -6,6 +6,7 @@ import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.StreamContentProcessingException;
+import com.example.agentgateway.domain.filteredstream.StreamFallbackRequestedException;
 import com.example.agentgateway.domain.filteredstream.StreamReplacementCatalog;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
 import org.junit.jupiter.api.BeforeEach;
@@ -372,6 +373,49 @@ class StreamingContentProcessorTest {
 
         assertEquals(1, result.size());
         assertEquals("<Houseview>普通内容</Houseview>", result.get(0).getContent());
+    }
+
+    @Test
+    void shouldHoldSplitFallbackMarkerWithoutLeakingCurrentFrame() {
+        assertTrue(processor.accept("未输出的正文<fall").isEmpty());
+
+        assertThrows(StreamFallbackRequestedException.class,
+                () -> processor.accept("back />不应输出"));
+        assertEquals("", processor.getTransformedAnswer());
+    }
+
+    @Test
+    void shouldKeepPreviouslyReleasedTextWhenFallbackMarkerAppears() {
+        assertEquals("已输出。", processor.accept("已输出。").get(0).getContent());
+
+        assertThrows(StreamFallbackRequestedException.class,
+                () -> processor.accept("本帧正文<fallback />尾部"));
+        assertEquals("已输出。", processor.getTransformedAnswer());
+    }
+
+    @Test
+    void shouldRestoreTextThatOnlyResemblesFallbackMarker() {
+        assertTrue(processor.accept("普通<fall").isEmpty());
+
+        List<ProcessedContentBlock> result = processor.accept("back!正文");
+
+        assertEquals(1, result.size());
+        assertEquals("普通<fallback!正文", result.get(0).getContent());
+    }
+
+    @Test
+    void shouldDetectFallbackMarkerAfterFundGroupWithoutCreatingCard() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fund(fund("000001", "基金一"))
+                .build());
+
+        assertTrue(fundProcessor.accept("<li id=\"000001\" />\n<fall")
+                .isEmpty());
+        assertThrows(StreamFallbackRequestedException.class,
+                () -> fundProcessor.accept("back />"));
+        assertEquals("", fundProcessor.getTransformedAnswer());
     }
 
     private CardDefinition card(String placeholder, String id, String name) {

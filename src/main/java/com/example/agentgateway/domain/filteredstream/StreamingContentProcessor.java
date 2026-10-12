@@ -17,6 +17,7 @@ public class StreamingContentProcessor {
     private static final String URL_PREFIX = "<url";
     private static final String CARD_PREFIX = "<m-card";
     private static final String FUND_ITEM_PREFIX = "<li";
+    private static final String FALLBACK_MARKER = "<fallback />";
     private static final int MAX_STRUCTURED_CONTENT_LENGTH = 8192;
     private static final Pattern CARD_PLACEHOLDER_PATTERN = Pattern.compile(
             "^card_[A-Za-z0-9_-]+$");
@@ -145,7 +146,10 @@ public class StreamingContentProcessor {
                                               StringBuilder textOutput) {
         structuredBuffer.append(character);
         String candidate = structuredBuffer.toString();
-        if (URL_PREFIX.equals(candidate)) {
+        if (FALLBACK_MARKER.equals(candidate)) {
+            // 控制标记和同一上游帧中尚未释放的内容都不能进入 DATA。
+            throw new StreamFallbackRequestedException();
+        } else if (URL_PREFIX.equals(candidate)) {
             state = StreamingContentState.URL;
         } else if (CARD_PREFIX.equals(candidate)) {
             state = StreamingContentState.CARD;
@@ -153,7 +157,8 @@ public class StreamingContentProcessor {
             state = StreamingContentState.FUND_ITEM;
         } else if (!URL_PREFIX.startsWith(candidate)
                 && !CARD_PREFIX.startsWith(candidate)
-                && !FUND_ITEM_PREFIX.startsWith(candidate)) {
+                && !FUND_ITEM_PREFIX.startsWith(candidate)
+                && !FALLBACK_MARKER.startsWith(candidate)) {
             // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
             state = StreamingContentState.TEXT;
             feedOrdinaryText(candidate, textOutput);
@@ -233,7 +238,10 @@ public class StreamingContentProcessor {
         structuredBuffer.append(character);
         ensureStructuredLength();
         String groupCandidate = structuredBuffer.toString();
-        if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
+        if (FALLBACK_MARKER.equals(groupCandidate)) {
+            // li 组后也可能直接跟随兜底标记；无需再调用卡片 API。
+            throw new StreamFallbackRequestedException();
+        } else if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
             // 标签之间的空白只是模型排版，不属于最终卡片正文。
             fundGroupGapBuffer.setLength(0);
             state = StreamingContentState.FUND_ITEM;
@@ -249,7 +257,8 @@ public class StreamingContentProcessor {
             state = StreamingContentState.CARD;
         } else if (!FUND_ITEM_PREFIX.startsWith(groupCandidate)
                 && !URL_PREFIX.startsWith(groupCandidate)
-                && !CARD_PREFIX.startsWith(groupCandidate)) {
+                && !CARD_PREFIX.startsWith(groupCandidate)
+                && !FALLBACK_MARKER.startsWith(groupCandidate)) {
             flushFundGroup(currentBlocks);
             feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
             feedOrdinaryText(groupCandidate, textOutput);

@@ -17,6 +17,7 @@ import com.example.agentgateway.domain.filteredstream.FallbackMessage;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.FundReference;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
+import com.example.agentgateway.domain.filteredstream.StreamFallbackRequestedException;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
 import com.example.agentgateway.application.dto.AixzChatRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -149,6 +150,17 @@ public class FilteredStreamService {
                     .concatMap(frame -> processFrame(context, frame), 1)
                     // 正常完成时刷出缓存、推荐问和 DONE；主动兜底时只补 DONE。
                     .concatWith(Flux.defer(() -> finishStream(context)))
+                    .onErrorResume(StreamFallbackRequestedException.class,
+                            ignored -> {
+                                // <fallback /> 是模型的控制指令，不属于异常日志。
+                                // 终止当前处理链会取消上游订阅；客户端从首帧
+                                // fallbackAnswer 取兜底话术，随后接收 FALLBACK/DONE。
+                                log.info("上游正文请求兜底, recordId={}",
+                                        context.getRecordId());
+                                return fallbackThenDone(
+                                        !context.isMetadataForwarded(),
+                                        context.getRecordId());
+                            })
                     .onErrorResume(throwable -> {
                         log.error(context.hasUpstreamFrameReceived()
                                         || throwable instanceof UpstreamFrameException
