@@ -21,7 +21,7 @@ public class ProcessedContentBlock {
     // 错配到其他 DATA 帧。
     private final List<ProcessedLinkMapping> linkMapping;
     private final List<ProcessedCardMapping> cardMapping;
-    private final List<FundDefinition> fundList;
+    private final FundCardSource fundCardSource;
 
     public static ProcessedContentBlock text(String content) {
         return ProcessedContentBlock.builder()
@@ -29,7 +29,6 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
-                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
@@ -44,7 +43,6 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(immutableCopy(mappings))
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
-                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
@@ -59,18 +57,20 @@ public class ProcessedContentBlock {
                 .content(content)
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(immutableCopy(mappings))
-                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
-    public static ProcessedContentBlock fundCardGroup(
-            List<FundDefinition> funds) {
+    public static ProcessedContentBlock fundCardGroup(FundCardSource source) {
+        FundCardSource safeSource = FundCardSource.builder()
+                .subtitle(source.getSubtitle())
+                .list(immutableCopy(source.getList()))
+                .build();
         return ProcessedContentBlock.builder()
                 .type(TYPE_FUND_CARD_GROUP)
                 .content("")
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
-                .fundList(immutableCopy(funds))
+                .fundCardSource(safeSource)
                 .build();
     }
 
@@ -86,7 +86,6 @@ public class ProcessedContentBlock {
                         + "' />")
                 .linkMapping(Collections.<ProcessedLinkMapping>emptyList())
                 .cardMapping(immutableCopy(mappings))
-                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 
@@ -107,7 +106,6 @@ public class ProcessedContentBlock {
                 .content(content + other.content)
                 .linkMapping(immutableCopy(mappings))
                 .cardMapping(Collections.<ProcessedCardMapping>emptyList())
-                .fundList(Collections.<FundDefinition>emptyList())
                 .build();
     }
 

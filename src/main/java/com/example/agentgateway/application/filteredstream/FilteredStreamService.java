@@ -372,7 +372,8 @@ public class FilteredStreamService {
         }
         // RestTemplate 是阻塞调用；放在 boundedElastic 上执行，避免阻塞
         // 上游 WebClient 的事件线程，同时保留 concatMap 的顺序和异常兜底。
-        return Mono.fromCallable(() -> fundCardPort.createCard(block.getFundList()))
+        return Mono.fromCallable(() -> fundCardPort.createCard(
+                        block.getFundCardSource()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(ProcessedContentBlock::generatedFundCard)
                 .map(FilteredStreamEvent::content);

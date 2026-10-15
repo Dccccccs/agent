@@ -3,7 +3,6 @@ package com.example.agentgateway;
 import com.example.agentgateway.application.filteredstream.FilteredStreamException;
 import com.example.agentgateway.application.filteredstream.model.UpstreamStreamFrame;
 import com.example.agentgateway.infrastructure.filteredstream.client.UpstreamStreamFrameConverter;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,52 +22,37 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
-    void shouldDecodePlainSseData() {
-        // 【原始外部 SSE 帧模拟】生产环境中 data: 前缀通常由 WebClient 的
-        // ServerSentEvent 解包掉；解码器仍兼容直接传入完整 data 行。
-        UpstreamStreamFrame frame =
-                converter.convert("data: 普通增量文本");
+    void shouldSkipEmptySseData() {
+        assertFalse(converter.convert("data: ").isDeliverable());
+    }
 
-        assertEquals("普通增量文本", frame.getContent());
+    @Test
+    void shouldDecodeStatusFrameWithDataPrefix() {
+        UpstreamStreamFrame frame = converter.convert(
+                "data: {\"status\":\"MIDDLE\",\"content\":\"增量\"}");
+
+        assertEquals("增量", frame.getContent());
         assertFalse(frame.getDone());
     }
 
     @Test
-    void shouldDecodeOpenAiCompatibleDelta() {
-        UpstreamStreamFrame frame = converter.convert(
-                "{\"choices\":[{\"delta\":{\"content\":\"增量\"}}]}");
-
-        assertEquals("增量", frame.getContent());
+    void shouldRejectNonStatusFormats() {
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert("普通增量文本"));
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert("{\"choices\":[{\"delta\":{\"content\":\"增量\"}}]}"));
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert("{\"returnType\":\"DATA\"}"));
     }
 
     @Test
-    void shouldDecodeDocumentedDataFrame() {
-        UpstreamStreamFrame frame = converter.convert(
-                "{\"returnType\":\"DATA\",\"body\":{\"answer\":[{"
-                        + "\"type\":\"text\",\"data\":{\"content\":\"正文\"}}]}}");
+    void shouldRejectUnknownStatusInsteadOfLeakingRawJson() {
+        FilteredStreamException exception = assertThrows(
+                FilteredStreamException.class,
+                () -> converter.convert(
+                        "{\"status\":\"UNKNOW\",\"content\":\"不应输出\"}"));
 
-        assertEquals("正文", frame.getContent());
-    }
-
-    @Test
-    void shouldNormalizeDocumentedMetadataToTargetObjectShape()
-            throws Exception {
-        String raw = "{\"body\":{\"answer\":[],\"status\":\"NORMAL\"," 
-                + "\"sections\":{\"fund\":\"x\"},"
-                + "\"recordId\":\"r-1\"},\"returnType\":\"DATA\","
-                + "\"customField\":\"keep\"}";
-
-        UpstreamStreamFrame frame = converter.convert(raw);
-
-        assertTrue(frame.getMetadata());
-        JsonNode metadata = new ObjectMapper().readTree(
-                frame.getMetadataJson());
-        assertTrue(metadata.isObject());
-        assertEquals("METADATA", metadata.path("returnType").asText());
-        assertEquals("r-1", metadata.path("body").path("recordId").asText());
-        // 外部包装层字段不属于最终首帧协议，不继续向下游透传。
-        assertFalse(metadata.has("customField"));
-        assertFalse(frame.hasContent());
+        assertTrue(exception.getMessage().contains("UNKNOW"));
     }
 
     @Test
@@ -197,23 +181,15 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
-    void shouldReadFallbackInstructionFromDocumentedMetadataFrame() {
-        UpstreamStreamFrame frame = converter.convert(
-                "{\"returnType\":\"METADATA\",\"body\":{"
-                        + "\"status\":\"FALLBACK\"}}");
-
-        assertTrue(frame.getMetadata());
-        assertTrue(frame.getMetadataContent().requestsFallback());
-    }
-
-    @Test
-    void shouldRecognizeFallbackOnlyFirstDataFrameAsMetadata() {
-        UpstreamStreamFrame frame = converter.convert(
-                "{\"returnType\":\"DATA\",\"body\":{"
-                        + "\"answer\":[],\"status\":\"FALLBACK\"}}");
-
-        assertTrue(frame.getMetadata());
-        assertTrue(frame.getMetadataContent().requestsFallback());
+    void shouldRejectDocumentedMetadataFormatsWithoutUpstreamStatus() {
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert(
+                        "{\"returnType\":\"METADATA\",\"body\":{"
+                                + "\"status\":\"FALLBACK\"}}"));
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert(
+                        "{\"returnType\":\"DATA\",\"body\":{"
+                                + "\"answer\":[],\"status\":\"FALLBACK\"}}"));
     }
 
     @Test
@@ -296,17 +272,31 @@ class UpstreamStreamFrameConverterTest {
         UpstreamStreamFrame frame = converter.convert(
                 "{\"status\":\"METADATA\",\"content\":"
                         + "\"{\\\"status\\\":\\\"NORMAL\\\","
-                        + "\\\"fundList\\\":[{"
+                        + "\\\"fundList\\\":{\\\"subtitle\\\":\\\"数据更新日期：2026.8.25\\\","
+                        + "\\\"list\\\":[{"
                         + "\\\"fundId\\\":\\\"000001\\\","
                         + "\\\"fundName\\\":\\\"基金一\\\","
-                        + "\\\"fundDesc\\\":\\\"基金一描述\\\"}]}\"}");
+                        + "\\\"fundDesc\\\":\\\"基金一描述\\\"}]}}\"}");
 
         assertTrue(frame.getMetadata());
-        assertEquals(1, frame.getMetadataContent().getFundList().size());
+        assertEquals("数据更新日期：2026.8.25",
+                frame.getMetadataContent().getFundList().getSubtitle());
+        assertEquals(1, frame.getMetadataContent().getFundList().getList().size());
         assertEquals("000001",
-                frame.getMetadataContent().getFundList().get(0).getFundId());
+                frame.getMetadataContent().getFundList().getList().get(0).getFundId());
         assertEquals("基金一",
-                frame.getMetadataContent().getFundList().get(0).getFundName());
+                frame.getMetadataContent().getFundList().getList().get(0).getFundName());
+    }
+
+    @Test
+    void shouldRejectLegacyFundListArray() {
+        FilteredStreamException exception = assertThrows(
+                FilteredStreamException.class,
+                () -> converter.convert("{\"status\":\"METADATA\","
+                        + "\"content\":{\"status\":\"NORMAL\","
+                        + "\"fundList\":[{\"fundId\":\"000001\"}]}}"));
+
+        assertTrue(exception.getMessage().contains("fundList 必须是对象"));
     }
 
     @Test
@@ -365,18 +355,21 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
-    void shouldRecognizeDoneMarkers() {
-        assertTrue(converter.convert("[DONE]").getDone());
-        assertTrue(converter.convert("{\"returnType\":\"DONE\"}").getDone());
+    void shouldRejectOtherDoneMarkers() {
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert("[DONE]"));
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert("{\"returnType\":\"DONE\"}"));
     }
 
     @Test
-    void shouldTranslateUpstreamErrorFrame() {
-        FilteredStreamException exception = assertThrows(FilteredStreamException.class,
+    void shouldRejectNonTextEndContent() {
+        FilteredStreamException exception = assertThrows(
+                FilteredStreamException.class,
                 () -> converter.convert(
-                        "{\"returnType\":\"ERROR\",\"message\":\"模型异常\"}"));
+                        "{\"status\":\"END\",\"content\":{}}"));
 
-        assertEquals("模型异常", exception.getMessage());
+        assertTrue(exception.getMessage().contains("END"));
     }
 
     @Test

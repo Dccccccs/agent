@@ -1,11 +1,14 @@
 package com.example.agentgateway.domain.filteredstream;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -13,10 +16,12 @@ import java.util.regex.Pattern;
  * 单次流订阅独占的有状态处理器。它不会把可能属于敏感词、卡片标签或 URL
  * 标签的半截内容提前交给下游。
  */
+@Slf4j
 public class StreamingContentProcessor {
     private static final String URL_PREFIX = "<url";
     private static final String CARD_PREFIX = "<m-card";
     private static final String FUND_ITEM_PREFIX = "<li";
+    private static final String FUND_CARD_END_PREFIX = "</m-card";
     private static final String FALLBACK_MARKER = "<fallback />";
     private static final int MAX_STRUCTURED_CONTENT_LENGTH = 8192;
     private static final Pattern CARD_PLACEHOLDER_PATTERN = Pattern.compile(
@@ -24,12 +29,17 @@ public class StreamingContentProcessor {
     private static final Pattern CARD_TAG_PATTERN = Pattern.compile(
             "^<m-card\\s+id\\s*=\\s*'(card_[A-Za-z0-9_-]+)'\\s*/>$",
             Pattern.DOTALL);
+    private static final Pattern FUND_CARD_OPEN_PATTERN = Pattern.compile(
+            "^<m-card(?:\\s+id\\s*=\\s*(?:'[^']*'|\"[^\"]*\"))?\\s*>$",
+            Pattern.DOTALL);
+    private static final Pattern FUND_CARD_END_PATTERN = Pattern.compile(
+            "^</m-card\\s*>$", Pattern.DOTALL);
     private static final Pattern LINK_URL_PATTERN = Pattern.compile(
             "^<url\\s+id\\s*=\\s*\"([^\"]+)\"\\s+text\\s*=\\s*\"([^\"]*)\"\\s*/>$",
             Pattern.DOTALL);
     private static final Pattern FUND_ITEM_PATTERN = Pattern.compile(
-            "^<li\\s+id\\s*=\\s*\"([^\"]+)\""
-                    + "(?:\\s+text\\s*=\\s*\"([^\"]*)\")?\\s*/>$",
+            "^<li\\s+id\\s*=\\s*(['\"])([^'\"]+)\\1"
+                    + "(?:\\s+text\\s*=\\s*(['\"])(.*?)\\3)?\\s*/>$",
             Pattern.DOTALL);
 
     private final StreamReplacementCatalog catalog;
@@ -37,9 +47,12 @@ public class StreamingContentProcessor {
     private final List<String> sensitiveWords;
     private final StringBuilder sensitiveBuffer = new StringBuilder();
     private final StringBuilder structuredBuffer = new StringBuilder();
-    private final StringBuilder fundGroupGapBuffer = new StringBuilder();
     private final List<FundDefinition> currentFundGroup =
             new ArrayList<FundDefinition>();
+    // 只统计首个完整 li 到最后一个完整 li 的接收跨度，
+    // 不把首个 li 自身、等待 </m-card>、卡片 API 和下游发送计入耗时。
+    private Long firstLiCompletedAtNanos;
+    private Long lastLiCompletedAtNanos;
     // 一旦帧尾仍存在不确定前缀，需要连同本帧已处理文本一起暂存；否则前端
     // 会先看到半截原文，后续无法再完成“合并成一帧”的替换要求。
     private final List<ProcessedContentBlock> heldBlocks =
@@ -116,12 +129,14 @@ public class StreamingContentProcessor {
             case FUND_ITEM:
                 processFundItemCharacter(character, textOutput, currentBlocks);
                 break;
-            case FUND_GROUP_GAP:
-                processFundGroupGapCharacter(character, textOutput, currentBlocks);
+            case FUND_CARD_BODY:
+                processFundCardBodyCharacter(character);
                 break;
-            case FUND_GROUP_CANDIDATE:
-                processFundGroupCandidateCharacter(character, textOutput,
-                        currentBlocks);
+            case FUND_CARD_TAG_CANDIDATE:
+                processFundCardTagCandidateCharacter(character);
+                break;
+            case FUND_CARD_END:
+                processFundCardEndCharacter(character, currentBlocks);
                 break;
             default:
                 throw new IllegalStateException("未知流处理状态");
@@ -154,10 +169,13 @@ public class StreamingContentProcessor {
         } else if (CARD_PREFIX.equals(candidate)) {
             state = StreamingContentState.CARD;
         } else if (FUND_ITEM_PREFIX.equals(candidate)) {
-            state = StreamingContentState.FUND_ITEM;
+            throw fail("<li> 标签必须位于 <m-card> 容器内");
+        } else if (FUND_CARD_END_PREFIX.equals(candidate)) {
+            throw fail("出现没有开始标签的 </m-card>");
         } else if (!URL_PREFIX.startsWith(candidate)
                 && !CARD_PREFIX.startsWith(candidate)
                 && !FUND_ITEM_PREFIX.startsWith(candidate)
+                && !FUND_CARD_END_PREFIX.startsWith(candidate)
                 && !FALLBACK_MARKER.startsWith(candidate)) {
             // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
             state = StreamingContentState.TEXT;
@@ -171,12 +189,23 @@ public class StreamingContentProcessor {
                                       List<ProcessedContentBlock> currentBlocks) {
         structuredBuffer.append(character);
         ensureStructuredLength();
-        if (endsWith(structuredBuffer, "/>")) {
-            flushText(textOutput, currentBlocks);
-            currentBlocks.add(resolveCard(structuredBuffer.toString()));
-            structuredBuffer.setLength(0);
-            state = StreamingContentState.TEXT;
+        if (character != '>') {
+            return;
         }
+        String tag = structuredBuffer.toString();
+        flushText(textOutput, currentBlocks);
+        if (endsWith(structuredBuffer, "/>")) {
+            currentBlocks.add(resolveCard(tag));
+            state = StreamingContentState.TEXT;
+        } else if (FUND_CARD_OPEN_PATTERN.matcher(tag).matches()) {
+            currentFundGroup.clear();
+            firstLiCompletedAtNanos = null;
+            lastLiCompletedAtNanos = null;
+            state = StreamingContentState.FUND_CARD_BODY;
+        } else {
+            throw fail("非法 <m-card> 开始标签: " + tag);
+        }
+        structuredBuffer.setLength(0);
     }
 
     private int processUrlCharacter(char character,
@@ -205,64 +234,56 @@ public class StreamingContentProcessor {
         structuredBuffer.append(character);
         ensureStructuredLength();
         if (endsWith(structuredBuffer, "/>")) {
+            long completedAtNanos = System.nanoTime();
             flushText(textOutput, currentBlocks);
             addFundToCurrentGroup(structuredBuffer.toString());
+            if (firstLiCompletedAtNanos == null) {
+                firstLiCompletedAtNanos = completedAtNanos;
+            }
+            lastLiCompletedAtNanos = completedAtNanos;
             structuredBuffer.setLength(0);
-            fundGroupGapBuffer.setLength(0);
-            state = StreamingContentState.FUND_GROUP_GAP;
+            state = StreamingContentState.FUND_CARD_BODY;
         }
     }
 
-    private void processFundGroupGapCharacter(char character,
-                                              StringBuilder textOutput,
-                                              List<ProcessedContentBlock> currentBlocks) {
-        if (Character.isWhitespace(character)) {
-            fundGroupGapBuffer.append(character);
-        } else if (character == '<') {
+    private void processFundCardBodyCharacter(char character) {
+        if (character == '<') {
             structuredBuffer.setLength(0);
             structuredBuffer.append(character);
-            state = StreamingContentState.FUND_GROUP_CANDIDATE;
-        } else {
-            flushFundGroup(currentBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            fundGroupGapBuffer.setLength(0);
-            feedSensitive(character, textOutput);
-            state = StreamingContentState.TEXT;
+            state = StreamingContentState.FUND_CARD_TAG_CANDIDATE;
+        } else if (!Character.isWhitespace(character)) {
+            throw fail("<m-card> 容器内只允许 <li> 标签和空白字符");
         }
     }
 
-    private void processFundGroupCandidateCharacter(
-            char character,
-            StringBuilder textOutput,
-            List<ProcessedContentBlock> currentBlocks) {
+    private void processFundCardTagCandidateCharacter(char character) {
         structuredBuffer.append(character);
         ensureStructuredLength();
-        String groupCandidate = structuredBuffer.toString();
-        if (FALLBACK_MARKER.equals(groupCandidate)) {
-            // li 组后也可能直接跟随兜底标记；无需再调用卡片 API。
+        String candidate = structuredBuffer.toString();
+        if (FALLBACK_MARKER.equals(candidate)) {
+            // 容器内的兜底标记也优先于卡片生成。
             throw new StreamFallbackRequestedException();
-        } else if (FUND_ITEM_PREFIX.equals(groupCandidate)) {
-            // 标签之间的空白只是模型排版，不属于最终卡片正文。
-            fundGroupGapBuffer.setLength(0);
+        } else if (FUND_ITEM_PREFIX.equals(candidate)) {
             state = StreamingContentState.FUND_ITEM;
-        } else if (URL_PREFIX.equals(groupCandidate)) {
+        } else if (FUND_CARD_END_PREFIX.equals(candidate)) {
+            state = StreamingContentState.FUND_CARD_END;
+        } else if (!FUND_ITEM_PREFIX.startsWith(candidate)
+                && !FUND_CARD_END_PREFIX.startsWith(candidate)
+                && !FALLBACK_MARKER.startsWith(candidate)) {
+            throw fail("<m-card> 容器内存在非法标签: " + candidate);
+        }
+    }
+
+    private void processFundCardEndCharacter(
+            char character, List<ProcessedContentBlock> currentBlocks) {
+        structuredBuffer.append(character);
+        ensureStructuredLength();
+        if (character == '>') {
+            String tag = structuredBuffer.toString();
+            if (!FUND_CARD_END_PATTERN.matcher(tag).matches()) {
+                throw fail("非法 </m-card> 结束标签: " + tag);
+            }
             flushFundGroup(currentBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            fundGroupGapBuffer.setLength(0);
-            state = StreamingContentState.URL;
-        } else if (CARD_PREFIX.equals(groupCandidate)) {
-            flushFundGroup(currentBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            fundGroupGapBuffer.setLength(0);
-            state = StreamingContentState.CARD;
-        } else if (!FUND_ITEM_PREFIX.startsWith(groupCandidate)
-                && !URL_PREFIX.startsWith(groupCandidate)
-                && !CARD_PREFIX.startsWith(groupCandidate)
-                && !FALLBACK_MARKER.startsWith(groupCandidate)) {
-            flushFundGroup(currentBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            feedOrdinaryText(groupCandidate, textOutput);
-            fundGroupGapBuffer.setLength(0);
             structuredBuffer.setLength(0);
             state = StreamingContentState.TEXT;
         }
@@ -279,26 +300,17 @@ public class StreamingContentProcessor {
         if (state == StreamingContentState.URL) {
             throw fail("流结束时存在未闭合的 <url> 标签");
         }
-        if (state == StreamingContentState.FUND_ITEM) {
-            throw fail("流结束时存在未闭合的 <li> 标签");
+        if (state == StreamingContentState.FUND_ITEM
+                || state == StreamingContentState.FUND_CARD_BODY
+                || state == StreamingContentState.FUND_CARD_TAG_CANDIDATE
+                || state == StreamingContentState.FUND_CARD_END) {
+            throw fail("流结束时存在未闭合的 <m-card> 基金容器");
         }
 
         StringBuilder textOutput = new StringBuilder();
         List<ProcessedContentBlock> finalBlocks =
                 new ArrayList<ProcessedContentBlock>();
-        if (state == StreamingContentState.FUND_GROUP_GAP) {
-            flushFundGroup(finalBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            fundGroupGapBuffer.setLength(0);
-            state = StreamingContentState.TEXT;
-        } else if (state == StreamingContentState.FUND_GROUP_CANDIDATE) {
-            flushFundGroup(finalBlocks);
-            feedOrdinaryText(fundGroupGapBuffer.toString(), textOutput);
-            feedOrdinaryText(structuredBuffer.toString(), textOutput);
-            fundGroupGapBuffer.setLength(0);
-            structuredBuffer.setLength(0);
-            state = StreamingContentState.TEXT;
-        } else if (state == StreamingContentState.TAG_CANDIDATE) {
+        if (state == StreamingContentState.TAG_CANDIDATE) {
             feedOrdinaryText(structuredBuffer.toString(), textOutput);
             structuredBuffer.setLength(0);
             state = StreamingContentState.TEXT;
@@ -390,7 +402,7 @@ public class StreamingContentProcessor {
         if (!matcher.matches()) {
             throw fail("非法 <li> 标签: " + tag);
         }
-        String fundId = matcher.group(1);
+        String fundId = matcher.group(2);
         Optional<FundDefinition> fund = metadata.findFund(fundId);
         if (!fund.isPresent()) {
             throw fail("li 中的基金不在 Metadata.fundList 中, fundId=" + fundId);
@@ -401,7 +413,7 @@ public class StreamingContentProcessor {
             }
         }
         FundDefinition metadataFund = fund.get();
-        String text = matcher.group(2);
+        String text = matcher.group(4);
         // 没有 text 属性时保留首帧 fundDesc；只要模型显式输出
         // text（包括空字符串），就以它覆盖本次卡片请求的 fundDesc。
         if (text == null) {
@@ -419,8 +431,17 @@ public class StreamingContentProcessor {
         if (currentFundGroup.isEmpty()) {
             throw fail("基金卡片组不能为空");
         }
-        blocks.add(ProcessedContentBlock.fundCardGroup(currentFundGroup));
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
+                lastLiCompletedAtNanos - firstLiCompletedAtNanos);
+        blocks.add(ProcessedContentBlock.fundCardGroup(
+                FundCardSource.builder()
+                        .subtitle(metadata.getFundList().getSubtitle())
+                        .list(currentFundGroup)
+                        .build()));
+        log.info("基金卡片 li 列表接收耗时, elapsedMillis={}", elapsedMillis);
         currentFundGroup.clear();
+        firstLiCompletedAtNanos = null;
+        lastLiCompletedAtNanos = null;
     }
 
     private void feedOrdinaryText(String text, StringBuilder output) {
@@ -736,8 +757,13 @@ public class StreamingContentProcessor {
                     .build());
         }
 
+        FundCardSource sourceFundList = source.getFundList() == null
+                ? FundCardSource.empty() : source.getFundList();
         List<FundDefinition> funds = new ArrayList<FundDefinition>();
-        for (FundDefinition fund : source.getFundList()) {
+        if (sourceFundList.getList() == null) {
+            throw new IllegalArgumentException("Metadata.fundList.list 不能为空");
+        }
+        for (FundDefinition fund : sourceFundList.getList()) {
             if (fund == null || isBlank(fund.getFundId())) {
                 throw new IllegalArgumentException("fundId 不能为空");
             }
@@ -758,7 +784,10 @@ public class StreamingContentProcessor {
         return StreamMetadata.builder()
                 .linkMapping(Collections.unmodifiableList(links))
                 .cardMapping(Collections.unmodifiableList(cards))
-                .fundList(Collections.unmodifiableList(funds))
+                .fundList(FundCardSource.builder()
+                        .subtitle(nullToEmpty(sourceFundList.getSubtitle()))
+                        .list(Collections.unmodifiableList(funds))
+                        .build())
                 .fallbackAnswer(source.getFallbackAnswer())
                 .status(source.getStatus())
                 .build();

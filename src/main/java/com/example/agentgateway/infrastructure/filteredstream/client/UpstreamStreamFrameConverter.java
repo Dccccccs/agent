@@ -4,6 +4,7 @@ import com.example.agentgateway.application.filteredstream.UpstreamFrameExceptio
 import com.example.agentgateway.application.filteredstream.model.UpstreamStreamFrame;
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
+import com.example.agentgateway.domain.filteredstream.FundCardSource;
 import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
@@ -25,8 +26,8 @@ import java.util.List;
 /**
  * 将外部 API 的单个 SSE data 解码为应用层统一帧，是上游协议适配的核心位置。
  *
- * <p>兼容纯文本、项目约定的 returnType 帧、模型实际返回的 status 帧以及
- * OpenAI 风格 choices 增量。协议差异在此层被消化，应用层只处理统一模型。</p>
+ * <p>只接受外部 API 的 status + content 帧协议；不符合协议的非空帧
+ * 会抛出异常，由应用层转换为兜底输出。</p>
  *
  * <p>当前外部模型的典型原始帧如下：</p>
  * <pre>
@@ -47,55 +48,29 @@ public class UpstreamStreamFrameConverter {
     }
 
     public UpstreamStreamFrame convert(String rawFrame) {
-        // rawFrame 是一个 SSE data 的完整内容，不是截至当前的全量回答。
-        // 方法每调用一次只处理一帧，并返回一个内部统一帧。
+        // WebClient 已拆出单个 SSE data；这里仍兼容直接传入 data: 前缀。
         if (rawFrame == null) {
             return UpstreamStreamFrame.skip();
         }
-        String payload = removeDataPrefix(rawFrame);
-        String trimmed = payload.trim();
-        if (trimmed.isEmpty()) {
+        String payload = removeDataPrefix(rawFrame).trim();
+        if (payload.isEmpty()) {
             return UpstreamStreamFrame.skip();
-        }
-        if ("[DONE]".equals(trimmed)) {
-            return UpstreamStreamFrame.done();
         }
 
         JsonNode root;
         try {
-            root = objectMapper.readTree(trimmed);
-        } catch (IOException ignored) {
-            // JSON 解析失败不一定是错误：上游允许直接把普通文本放进 SSE data。
-            return UpstreamStreamFrame.content(payload);
+            root = objectMapper.readTree(payload);
+        } catch (IOException ex) {
+            throw new UpstreamFrameException("上游流式帧不是合法 JSON 对象", ex);
         }
-        if (root == null) {
-            return UpstreamStreamFrame.skip();
-        }
-        if (root.isTextual()) {
-            return UpstreamStreamFrame.content(root.asText());
+        if (root == null || !root.isObject()) {
+            throw new UpstreamFrameException("上游流式帧必须是 JSON 对象");
         }
 
-        // 分支一：兼容本系统文档格式，例如
-        // {"returnType":"DATA","body":{"answer":[...]}}。
-        String returnType = textAt(root, "returnType");
-        // 先兼容本接口文档约定的 METADATA/DATA/ERROR/DONE 协议。
-        if ("DONE".equalsIgnoreCase(returnType)) {
-            return UpstreamStreamFrame.done();
-        }
-        if ("ERROR".equalsIgnoreCase(returnType)) {
-            String message = textAt(root, "message");
-            throw new UpstreamFrameException(
-                    isBlank(message) ? "上游流式API返回错误帧" : message);
-        }
-        if ("METADATA".equalsIgnoreCase(returnType)
-                || isMetadataDataFrame(root)) {
-            JsonNode body = root.path("body");
-            return buildMetadataFrame(body);
-        }
-
-        // 分支二：处理外部模型真实格式，即 status + content。
         String status = textAt(root, "status");
-        // 再处理外部模型实际使用的 METADATA/MIDDLE/END/ERROR 协议。
+        if (isBlank(status)) {
+            throw new UpstreamFrameException("上游流式帧缺少 status 字段");
+        }
         if ("METADATA".equalsIgnoreCase(status)) {
             return normalizeMetadataFrame(root);
         }
@@ -107,37 +82,26 @@ public class UpstreamStreamFrameConverter {
             throw new UpstreamFrameException(
                     isBlank(message) ? "上游流式API返回错误帧" : message);
         }
-        boolean terminalAfterContent = "END".equalsIgnoreCase(status)
-                || "DONE".equalsIgnoreCase(status);
-
-        // 外部模型的 MIDDLE 帧必须直接携带字符串类型的 content。这里不能继续
-        // 落入“未知 JSON 按原文输出”的兼容分支，否则协议异常会污染最终答案。
-        // END/DONE 帧仍允许不携带 content，表示没有最后一段增量、直接结束。
         if ("MIDDLE".equalsIgnoreCase(status)) {
-            JsonNode middleContent = root.path("content");
-            if (!middleContent.isTextual()) {
-                throw new UpstreamFrameException(
-                        "上游 MIDDLE 帧缺少字符串类型的 content 字段");
-            }
+            return contentFrame(root, false);
         }
+        if ("END".equalsIgnoreCase(status)) {
+            return contentFrame(root, true);
+        }
+        throw new UpstreamFrameException("不支持的上游流式帧 status: " + status);
+    }
 
-        String content = firstText(
-                root.path("content"),
-                root.path("data").path("content"),
-                root.path("body").path("answer").path(0).path("data").path("content"),
-                root.path("choices").path(0).path("delta").path("content"),
-                root.path("choices").path(0).path("text"),
-                root.path("message").path("content"),
-                root.path("answer"));
-        if (content != null) {
-            // END 帧可能同时携带最后一段增量，不能因为 done=true 而丢弃 content。
-            return UpstreamStreamFrame.content(content, terminalAfterContent);
-        }
-        if (terminalAfterContent) {
+    private UpstreamStreamFrame contentFrame(JsonNode root, boolean end) {
+        JsonNode content = root.path("content");
+        if (end && (content.isMissingNode() || content.isNull())) {
             return UpstreamStreamFrame.done();
         }
-        // 未知 JSON 不能静默丢失，按原始文本交给领域处理器，便于发现协议变化。
-        return UpstreamStreamFrame.content(payload);
+        if (!content.isTextual()) {
+            throw new UpstreamFrameException("上游 " + (end ? "END" : "MIDDLE")
+                    + " 帧缺少字符串类型的 content 字段");
+        }
+        // END 帧若带最后一段增量，仍先将 content 交给正文处理，再结束上游。
+        return UpstreamStreamFrame.content(content.asText(), end);
     }
 
     private String removeDataPrefix(String value) {
@@ -211,7 +175,7 @@ public class UpstreamStreamFrameConverter {
             return StreamMetadata.builder()
                     .linkMapping(new ArrayList<LinkDefinition>())
                     .cardMapping(new ArrayList<CardDefinition>())
-                    .fundList(new ArrayList<FundDefinition>())
+                    .fundList(FundCardSource.empty())
                     .fallbackAnswer(fallbackAnswer)
                     .status(MetadataStatus.FALLBACK)
                     .build();
@@ -219,7 +183,7 @@ public class UpstreamStreamFrameConverter {
         return StreamMetadata.builder()
                 .linkMapping(extractLinks(metadataBody))
                 .cardMapping(extractCards(metadataBody))
-                .fundList(extractFunds(metadataBody))
+                .fundList(extractFundList(metadataBody))
                 .suggestedQuery(extractSuggestedQueries(metadataBody))
                 .fallbackAnswer(fallbackAnswer)
                 .status(MetadataStatus.NORMAL)
@@ -488,23 +452,29 @@ public class UpstreamStreamFrameConverter {
         return false;
     }
 
-    /** 将首帧 fundList 转为领域基金对象，字段完整性由领域层统一校验。 */
-    private List<FundDefinition> extractFunds(JsonNode metadataBody) {
-        List<FundDefinition> result = new ArrayList<FundDefinition>();
-        if (metadataBody == null || !metadataBody.isObject()) {
-            return result;
-        }
+    /** 按首帧 fundList 原有的对象层级解析，避免在处理链中拆成平行字段。 */
+    private FundCardSource extractFundList(JsonNode metadataBody) {
         JsonNode fundList = metadataBody.path("fundList");
         if (fundList.isMissingNode() || fundList.isNull()) {
-            return result;
+            return FundCardSource.empty();
         }
-        if (!fundList.isArray()) {
-            throw new UpstreamFrameException("Metadata.fundList 必须是数组");
+        if (!fundList.isObject()) {
+            throw new UpstreamFrameException("Metadata.fundList 必须是对象");
         }
-        for (JsonNode item : fundList) {
+        JsonNode subtitle = fundList.path("subtitle");
+        if (!subtitle.isMissingNode() && !subtitle.isNull()
+                && !subtitle.isTextual()) {
+            throw new UpstreamFrameException("Metadata.fundList.subtitle 必须是字符串");
+        }
+        List<FundDefinition> result = new ArrayList<FundDefinition>();
+        JsonNode list = fundList.path("list");
+        if (!list.isArray()) {
+            throw new UpstreamFrameException("Metadata.fundList.list 必须是数组");
+        }
+        for (JsonNode item : list) {
             if (!item.isObject()) {
                 throw new UpstreamFrameException(
-                        "Metadata.fundList 元素必须是对象");
+                        "Metadata.fundList.list 元素必须是对象");
             }
             result.add(FundDefinition.builder()
                     .fundId(firstText(item.path("fundId")))
@@ -512,7 +482,11 @@ public class UpstreamStreamFrameConverter {
                     .fundDesc(firstText(item.path("fundDesc")))
                     .build());
         }
-        return result;
+        return FundCardSource.builder()
+                .subtitle(subtitle.isMissingNode() || subtitle.isNull()
+                        ? "" : subtitle.asText())
+                .list(result)
+                .build();
     }
 
     private String normalizeCardPlaceholder(String placeholder) {
@@ -525,24 +499,6 @@ public class UpstreamStreamFrameConverter {
             return normalized.substring(1, normalized.length() - 1).trim();
         }
         return normalized;
-    }
-
-    private boolean isMetadataDataFrame(JsonNode root) {
-        JsonNode body = root.path("body");
-        JsonNode answer = body.path("answer");
-        if (!body.isObject() || !answer.isArray() || answer.size() != 0) {
-            return false;
-        }
-        return body.has("sections")
-                || body.has("prompt")
-                || body.has("riskTip")
-                || body.has("agentAnswerSlots")
-                || body.has("suggestedQuery")
-                || body.has("recordId")
-                || body.has("status")
-                || body.has("linkMapping")
-                || body.has("cardMapping")
-                || body.has("fundList");
     }
 
     private boolean isBlank(String value) {

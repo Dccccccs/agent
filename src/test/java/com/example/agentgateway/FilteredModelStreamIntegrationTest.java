@@ -11,6 +11,7 @@ import com.example.agentgateway.application.filteredstream.port.FundCardPort;
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
 import com.example.agentgateway.domain.filteredstream.FundCard;
+import com.example.agentgateway.domain.filteredstream.FundCardSource;
 import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
@@ -512,34 +513,47 @@ class FilteredModelStreamIntegrationTest {
     }
 
     @Test
-    void shouldReplaceContinuousFundItemsWithOneGeneratedCard()
+    void shouldReplaceFundItemsInsideCardContainerWithOneGeneratedCard()
             throws Exception {
         String metadataJson = "{\"body\":{\"status\":\"NORMAL\","
-                + "\"fundList\":["
+                + "\"fundList\":{\"subtitle\":\"数据更新日期：2026.8.25\",\"list\":["
                 + "{\"fundId\":\"000001\",\"fundName\":\"基金一\","
                 + "\"fundDesc\":\"基金一描述\"},"
                 + "{\"fundId\":\"000002\",\"fundName\":\"基金二\","
-                + "\"fundDesc\":\"基金二描述\"}]},"
+                + "\"fundDesc\":\"基金二描述\"},"
+                + "{\"fundId\":\"000003\",\"fundName\":\"未引用基金\","
+                + "\"fundDesc\":\"不应传给卡片API\"}]}},"
                 + "\"returnType\":\"METADATA\"}";
         StreamMetadata metadata = StreamMetadata.builder()
-                .fund(FundDefinition.builder()
-                        .fundId("000001")
-                        .fundName("基金一")
-                        .fundDesc("基金一描述")
-                        .build())
-                .fund(FundDefinition.builder()
-                        .fundId("000002")
-                        .fundName("基金二")
-                        .fundDesc("基金二描述")
+                .fundList(FundCardSource.builder()
+                        .subtitle("数据更新日期：2026.8.25")
+                        .list(Arrays.asList(
+                                FundDefinition.builder()
+                                        .fundId("000001")
+                                        .fundName("基金一")
+                                        .fundDesc("基金一描述")
+                                        .build(),
+                                FundDefinition.builder()
+                                        .fundId("000002")
+                                        .fundName("基金二")
+                                        .fundDesc("基金二描述")
+                                        .build(),
+                                FundDefinition.builder()
+                                        .fundId("000003")
+                                        .fundName("未引用基金")
+                                        .fundDesc("不应传给卡片API")
+                                        .build()))
                         .build())
                 .status(MetadataStatus.NORMAL)
                 .build();
-        when(fundCardPort.createCard(argThat(funds ->
-                funds != null && funds.size() == 2
-                        && "000001".equals(funds.get(0).getFundId())
-                        && "".equals(funds.get(0).getFundDesc())
-                        && "000002".equals(funds.get(1).getFundId())
-                        && "描述".equals(funds.get(1).getFundDesc()))))
+        when(fundCardPort.createCard(argThat(source ->
+                source != null
+                        && "数据更新日期：2026.8.25".equals(source.getSubtitle())
+                        && source.getList().size() == 2
+                        && "000001".equals(source.getList().get(0).getFundId())
+                        && "".equals(source.getList().get(0).getFundDesc())
+                        && "000002".equals(source.getList().get(1).getFundId())
+                        && "描述".equals(source.getList().get(1).getFundDesc()))))
                 .thenReturn(FundCard.builder()
                         .cardId("card_combined_001")
                         .htmlContent("<div>组合基金卡片</div>")
@@ -549,10 +563,10 @@ class FilteredModelStreamIntegrationTest {
                 .thenReturn(Flux.just(
                         UpstreamStreamFrame.metadata(metadataJson, metadata),
                         UpstreamStreamFrame.content(
-                                "前文<li id=\"000001\" text=\""),
+                                "前文<m-card id=''><li id='000001' text='"),
                         UpstreamStreamFrame.content(
-                                "\" />\n<li id=\"000002\" text=\"描述\" />"),
-                        UpstreamStreamFrame.content("后文")));
+                                "' />\n<li id='000002' text='描述' />"),
+                        UpstreamStreamFrame.content("</m-card>后文")));
 
         MvcResult result = performAsync(post(ENDPOINT)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -583,16 +597,40 @@ class FilteredModelStreamIntegrationTest {
     }
 
     @Test
+    void shouldFallbackForFundItemWithoutCardContainer() throws Exception {
+        String metadataJson = "{\"body\":{\"status\":\"NORMAL\"},"
+                + "\"returnType\":\"METADATA\"}";
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadataJson),
+                        UpstreamStreamFrame.content("<li id='000001' />")));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"bare-fund-item\","
+                        + "\"uid\":\"u-1\",\"question\":\"基金组合\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertFallbackBeforeDone(result);
+        verify(fundCardPort, never()).createCard(any());
+    }
+
+    @Test
     void shouldFallbackWhenFundCardApiFails() throws Exception {
         String metadataJson = "{\"body\":{\"status\":\"NORMAL\","
-                + "\"fundList\":[{\"fundId\":\"000001\","
-                + "\"fundName\":\"基金一\",\"fundDesc\":\"描述\"}]},"
+                + "\"fundList\":{\"subtitle\":\"更新日期\",\"list\":[{\"fundId\":\"000001\","
+                + "\"fundName\":\"基金一\",\"fundDesc\":\"描述\"}]}},"
                 + "\"returnType\":\"METADATA\"}";
         StreamMetadata metadata = StreamMetadata.builder()
-                .fund(FundDefinition.builder()
-                        .fundId("000001")
-                        .fundName("基金一")
-                        .fundDesc("描述")
+                .fundList(FundCardSource.builder()
+                        .subtitle("更新日期")
+                        .list(Arrays.asList(FundDefinition.builder()
+                                .fundId("000001")
+                                .fundName("基金一")
+                                .fundDesc("描述")
+                                .build()))
                         .build())
                 .status(MetadataStatus.NORMAL)
                 .build();
@@ -603,7 +641,7 @@ class FilteredModelStreamIntegrationTest {
                 .thenReturn(Flux.just(
                         UpstreamStreamFrame.metadata(metadataJson, metadata),
                         UpstreamStreamFrame.content(
-                                "<li id=\"000001\" text=\"\" />正文")));
+                                "<m-card><li id='000001' text='' /></m-card>正文")));
 
         MvcResult result = performAsync(post(ENDPOINT)
                 .contentType(MediaType.APPLICATION_JSON)

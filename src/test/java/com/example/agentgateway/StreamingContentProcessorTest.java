@@ -3,6 +3,7 @@ package com.example.agentgateway;
 import com.example.agentgateway.domain.filteredstream.CardDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.FundDefinition;
+import com.example.agentgateway.domain.filteredstream.FundCardSource;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.StreamContentProcessingException;
@@ -11,6 +12,9 @@ import com.example.agentgateway.domain.filteredstream.StreamReplacementCatalog;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -18,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -270,33 +275,53 @@ class StreamingContentProcessorTest {
     }
 
     @Test
-    void shouldCollectContinuousFundItemsAcrossFrames() {
+    @ExtendWith(OutputCaptureExtension.class)
+    void shouldCollectFundItemsInsideCardAcrossFrames(CapturedOutput output) {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
         fundProcessor.registerMetadata(StreamMetadata.builder()
-                .fund(fund("000001", "基金一"))
-                .fund(fund("000002", "基金二"))
+                .fundList(FundCardSource.builder()
+                        .subtitle("数据更新日期：2026.8.25")
+                        .list(Arrays.asList(fund("000001", "基金一"),
+                                fund("000002", "基金二")))
+                        .build())
                 .build());
 
         assertTrue(fundProcessor.accept(
-                "前文<li id=\"000").isEmpty());
+                "前文<m-ca").isEmpty());
         assertTrue(fundProcessor.accept(
-                "001\" text=\"\" />\n<li id=\"000002\"").isEmpty());
+                "rd id=''><li id='000001' text='' />\n<li id='000002'")
+                .isEmpty());
+        assertTrue(fundProcessor.accept(
+                " text='模型描述' /></m-ca").isEmpty());
+        assertFalse(output.getOut().contains("基金卡片 li 列表接收耗时"));
         List<ProcessedContentBlock> blocks = fundProcessor.accept(
-                " text=\"模型描述\" />后文");
+                "rd>后文");
 
         assertEquals(3, blocks.size());
         assertEquals("前文", blocks.get(0).getContent());
         assertTrue(blocks.get(1).isFundCardGroup());
-        assertEquals(2, blocks.get(1).getFundList().size());
+        assertEquals("数据更新日期：2026.8.25",
+                blocks.get(1).getFundCardSource().getSubtitle());
+        assertEquals(2, blocks.get(1).getFundCardSource().getList().size());
         assertEquals("000001",
-                blocks.get(1).getFundList().get(0).getFundId());
-        assertEquals("", blocks.get(1).getFundList().get(0).getFundDesc());
+                blocks.get(1).getFundCardSource().getList().get(0).getFundId());
+        assertEquals("", blocks.get(1).getFundCardSource().getList().get(0).getFundDesc());
         assertEquals("000002",
-                blocks.get(1).getFundList().get(1).getFundId());
+                blocks.get(1).getFundCardSource().getList().get(1).getFundId());
         assertEquals("模型描述",
-                blocks.get(1).getFundList().get(1).getFundDesc());
+                blocks.get(1).getFundCardSource().getList().get(1).getFundDesc());
         assertEquals("后文", blocks.get(2).getContent());
+        assertTrue(output.getOut().contains(
+                "基金卡片 li 列表接收耗时, elapsedMillis="));
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void shouldNotTimeSelfClosingMetadataCard(CapturedOutput output) {
+        processor.accept("<m-card id='card_xxx' />");
+
+        assertFalse(output.getOut().contains("基金卡片 li 列表接收耗时"));
     }
 
     @Test
@@ -304,35 +329,52 @@ class StreamingContentProcessorTest {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
         fundProcessor.registerMetadata(StreamMetadata.builder()
-                .fund(fund("000001", "基金一"))
+                .fundList(fundList(fund("000001", "基金一")))
                 .build());
 
         assertTrue(fundProcessor.accept(
-                "<li id=\"000001\" />").isEmpty());
-        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+                "<m-card><li id='000001' />").isEmpty());
+        List<ProcessedContentBlock> blocks = fundProcessor.accept("</m-card>");
 
         assertEquals(1, blocks.size());
         assertTrue(blocks.get(0).isFundCardGroup());
         assertEquals("基金一描述",
-                blocks.get(0).getFundList().get(0).getFundDesc());
+                blocks.get(0).getFundCardSource().getList().get(0).getFundDesc());
     }
 
     @Test
-    void shouldFlushFundGroupWhenStreamEndsImmediatelyAfterLastItem() {
+    void shouldWaitForClosingCardTagAfterLastFundItem() {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
         fundProcessor.registerMetadata(StreamMetadata.builder()
-                .fund(fund("000001", "基金一"))
+                .fundList(fundList(fund("000001", "基金一")))
                 .build());
 
         assertTrue(fundProcessor.accept(
-                "<li id=\"000001\" text=\"模型描述\" />").isEmpty());
+                "<m-card><li id=\"000001\" text=\"模型描述\" />")
+                .isEmpty());
 
-        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+        assertThrows(StreamContentProcessingException.class,
+                fundProcessor::finish);
+    }
+
+    @Test
+    void shouldProduceFundCardOnlyAfterClosingTag() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(new TestCatalog());
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .fundList(fundList(fund("000001", "基金一")))
+                .build());
+
+        assertTrue(fundProcessor.accept(
+                "<m-card><li id=\"000001\" text=\"模型描述\" />")
+                .isEmpty());
+        List<ProcessedContentBlock> blocks = fundProcessor.accept("</m-card>");
 
         assertEquals(1, blocks.size());
         assertTrue(blocks.get(0).isFundCardGroup());
-        assertEquals("000001", blocks.get(0).getFundList().get(0).getFundId());
+        assertEquals("000001", blocks.get(0).getFundCardSource().getList()
+                .get(0).getFundId());
     }
 
     @Test
@@ -340,16 +382,16 @@ class StreamingContentProcessorTest {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
         fundProcessor.registerMetadata(StreamMetadata.builder()
-                .fund(fund("000001", "基金一"))
+                .fundList(fundList(fund("000001", "基金一")))
                 .build());
 
-        fundProcessor.accept("<li id=\"000001\" text=\"\" />"
-                + "<li id=\"000001\" text=\"重复\" />");
-        List<ProcessedContentBlock> blocks = fundProcessor.finish();
+        List<ProcessedContentBlock> blocks = fundProcessor.accept(
+                "<m-card><li id=\"000001\" text=\"\" />"
+                        + "<li id=\"000001\" text=\"重复\" /></m-card>");
 
         assertEquals(1, blocks.size());
         assertTrue(blocks.get(0).isFundCardGroup());
-        assertEquals(1, blocks.get(0).getFundList().size());
+        assertEquals(1, blocks.get(0).getFundCardSource().getList().size());
     }
 
     @Test
@@ -361,9 +403,15 @@ class StreamingContentProcessorTest {
         StreamContentProcessingException exception = assertThrows(
                 StreamContentProcessingException.class,
                 () -> fundProcessor.accept(
-                        "<li id=\"999999\" text=\"未知基金\" />"));
+                        "<m-card><li id='999999' text='未知基金' /></m-card>"));
 
         assertTrue(exception.getMessage().contains("fundList"));
+    }
+
+    @Test
+    void shouldRejectFundItemOutsideCardContainer() {
+        assertThrows(StreamContentProcessingException.class,
+                () -> processor.accept("<li id='000001' />"));
     }
 
     @Test
@@ -408,10 +456,10 @@ class StreamingContentProcessorTest {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
         fundProcessor.registerMetadata(StreamMetadata.builder()
-                .fund(fund("000001", "基金一"))
+                .fundList(fundList(fund("000001", "基金一")))
                 .build());
 
-        assertTrue(fundProcessor.accept("<li id=\"000001\" />\n<fall")
+        assertTrue(fundProcessor.accept("<m-card><li id='000001' />\n<fall")
                 .isEmpty());
         assertThrows(StreamFallbackRequestedException.class,
                 () -> fundProcessor.accept("back />"));
@@ -440,6 +488,13 @@ class StreamingContentProcessorTest {
                 .fundId(id)
                 .fundName(name)
                 .fundDesc(name + "描述")
+                .build();
+    }
+
+    private FundCardSource fundList(FundDefinition... funds) {
+        return FundCardSource.builder()
+                .subtitle("")
+                .list(Arrays.asList(funds))
                 .build();
     }
 
