@@ -1,6 +1,7 @@
 package com.example.agentgateway.application.filteredstream.model;
 
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
+import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import lombok.Getter;
 
@@ -19,12 +20,14 @@ public class FilteredStreamEvent {
      * 首帧 fallbackAnswer 中下发，FALLBACK 事件本身只负责通知客户端切换。
      */
     private final FilteredStreamEventType type;
-    /** 已规范化的首帧 JSON；接口层会将其解析为 JSON 对象后发送。 */
+    /** 已规范化的上游首帧 JSON，仅供首帧输出。 */
     private final String metadataJson;
     /** 首帧固定使用请求 msgId 覆盖上游 recordId。 */
     private final String recordId;
     private final ProcessedContentBlock contentBlock;
     private final List<RecommendationQuery> recommendationQueries;
+    /** 正常结束时已按正文基金筛选的风险信息。 */
+    private final OverRiskInfo overRiskInfo;
     /** 首帧预下发的结构化兜底回答。 */
     private final List<FallbackMessage> fallbackMessages;
     /** 仅正常完成时携带的上游原始正文全文。 */
@@ -35,6 +38,7 @@ public class FilteredStreamEvent {
                                 String recordId,
                                 ProcessedContentBlock contentBlock,
                                 List<RecommendationQuery> recommendationQueries,
+                                OverRiskInfo overRiskInfo,
                                 List<FallbackMessage> fallbackMessages,
                                 String originContent) {
         this.type = type;
@@ -42,6 +46,7 @@ public class FilteredStreamEvent {
         this.recordId = recordId;
         this.contentBlock = contentBlock;
         this.recommendationQueries = recommendationQueries;
+        this.overRiskInfo = overRiskInfo;
         this.fallbackMessages = immutableFallbackMessages(fallbackMessages);
         this.originContent = originContent;
     }
@@ -50,7 +55,8 @@ public class FilteredStreamEvent {
                                                String recordId,
                                                List<FallbackMessage> fallbackMessages) {
         return new FilteredStreamEvent(FilteredStreamEventType.METADATA,
-                metadataJson, recordId, null, null, fallbackMessages, null);
+                metadataJson, recordId, null, null, null,
+                fallbackMessages, null);
     }
 
     /**
@@ -65,32 +71,38 @@ public class FilteredStreamEvent {
 
     public static FilteredStreamEvent content(ProcessedContentBlock block) {
         return new FilteredStreamEvent(FilteredStreamEventType.CONTENT,
-                null, null, block, null, null, null);
+                null, null, block, null, null, null, null);
     }
 
     public static FilteredStreamEvent recommendations(
             List<RecommendationQuery> recommendationQueries) {
+        return recommendations(recommendationQueries, null);
+    }
+
+    public static FilteredStreamEvent recommendations(
+            List<RecommendationQuery> recommendationQueries,
+            OverRiskInfo overRiskInfo) {
         return new FilteredStreamEvent(FilteredStreamEventType.RECOMMENDATION,
                 null, null, null,
                 Collections.unmodifiableList(
                         new ArrayList<RecommendationQuery>(
                                 recommendationQueries)),
-                null, null);
+                overRiskInfo, null, null);
     }
 
     public static FilteredStreamEvent fallback() {
         return new FilteredStreamEvent(FilteredStreamEventType.FALLBACK,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent done() {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent done(String originContent) {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, originContent);
+                null, null, null, null, null, null, originContent);
     }
 
     private static List<FallbackMessage> immutableFallbackMessages(

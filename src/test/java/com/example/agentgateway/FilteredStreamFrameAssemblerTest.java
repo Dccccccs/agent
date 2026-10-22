@@ -4,9 +4,12 @@ import com.example.agentgateway.application.filteredstream.model.FilteredStreamE
 import com.example.agentgateway.application.filteredstream.model.RecommendationQuery;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
+import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProcessedCardMapping;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.ProcessedLinkMapping;
+import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
+import com.example.agentgateway.domain.filteredstream.UserRiskInfo;
 import com.example.agentgateway.interfaces.filteredstream.assembler.FilteredStreamFrameAssembler;
 import com.example.agentgateway.interfaces.filteredstream.assembler.FilteredStreamDtoAssembler;
 import com.example.agentgateway.interfaces.filteredstream.metadata.MetadataOutputCustomizer;
@@ -102,13 +105,15 @@ class FilteredStreamFrameAssemblerTest {
                         "{\"body\":{\"recordId\":\"r-1\"," 
                                 + "\"linkMapping\":[{\"linkId\":\"000001\"}],"
                                 + "\"cardMapping\":[{\"cardId\":\"card-1\"}],"
-                                + "\"suggestedQuery\":[{\"query\":\"旧推荐问\"}]},"
+                                + "\"suggestedQuery\":[{\"query\":\"旧推荐问\"}],"
+                                + "\"overRiskInfo\":{\"productRiskInfo\":[]}},"
                                 + "\"returnType\":\"METADATA\"}",
                         "request-r-5", fallbackMessages()));
 
         assertFalse(json.path("body").has("linkMapping"));
         assertFalse(json.path("body").has("cardMapping"));
         assertFalse(json.path("body").has("suggestedQuery"));
+        assertFalse(json.path("body").has("overRiskInfo"));
         assertEquals("request-r-5",
                 json.path("body").path("recordId").asText());
         JsonNode fallbackAnswer = json.path("body").path("fallbackAnswer")
@@ -132,6 +137,39 @@ class FilteredStreamFrameAssemblerTest {
         assertEquals("深度解读华夏成长", json.path("body")
                 .path("suggestedQuery").path(0).path("query").asText());
         assertFalse(json.path("body").has("operate"));
+    }
+
+    @Test
+    void shouldKeepRiskInfoStructureAndOnlyOutputRecommendedProducts() {
+        OverRiskInfo matchedRiskInfo = OverRiskInfo.builder()
+                .userRiskInfo(UserRiskInfo.builder()
+                        .userIsMinor("否")
+                        .userRiskLevel("A5")
+                        .userRiskStatus("已评估")
+                        .build())
+                .productRiskInfo(Collections.singletonList(
+                        ProductRiskInfo.builder()
+                                .productName("华夏成长")
+                                .productCode("000001")
+                                .bscRskLvl("R4")
+                                .build()))
+                .build();
+        JsonNode json = new ObjectMapper().valueToTree(assembler.toPayload(
+                FilteredStreamEvent.recommendations(
+                        Collections.singletonList(new RecommendationQuery(
+                                "深度解读华夏成长", null)),
+                        matchedRiskInfo)));
+
+        JsonNode body = json.path("body");
+        assertEquals("METADATA", json.path("returnType").asText());
+        assertEquals("深度解读华夏成长",
+                body.path("suggestedQuery").path(0).path("query").asText());
+        assertEquals("A5", body.path("overRiskInfo")
+                .path("userRiskInfo").path("userRiskLevel").asText());
+        assertEquals(1, body.path("overRiskInfo")
+                .path("productRiskInfo").size());
+        assertEquals("000001", body.path("overRiskInfo")
+                .path("productRiskInfo").path(0).path("productCode").asText());
     }
 
     @Test

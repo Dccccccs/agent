@@ -48,7 +48,7 @@ public class FilteredStreamFrameAssembler {
             case CONTENT:
                 return toDataFrame(event.getContentBlock());
             case RECOMMENDATION:
-                return toRecommendationFrame(event);
+                return toFinalMetadataFrame(event);
             case FALLBACK:
                 return FilteredStreamFrame.fallback();
             case DONE:
@@ -86,12 +86,12 @@ public class FilteredStreamFrameAssembler {
                 customizer.customize((ObjectNode) body);
             }
             // 这些字段只供内部规则处理：链接、卡片和基金信息保留在强类型
-            // StreamMetadata 中，推荐问延迟到 DONE 前的独立 METADATA 帧。
+            // StreamMetadata 中，推荐问及筛选后的风险信息延迟到 DONE 前。
             // 删除发生在定制器之后，避免定制器意外将内部字段重新带回首帧。
             ((ObjectNode) body).remove(
                     Arrays.asList(
                             "linkMapping", "cardMapping", "fundList",
-                            "suggestedQuery"));
+                            "suggestedQuery", "overRiskInfo"));
             // 客户端在首帧即可拿到完整兜底回答；后续 FALLBACK 帧只发送
             // 类型通知，不再重复发送答案内容。
             ((ObjectNode) body).set("fallbackAnswer",
@@ -120,15 +120,16 @@ public class FilteredStreamFrameAssembler {
         return FilteredStreamFrame.data(body);
     }
 
-    private FilteredStreamFrame toRecommendationFrame(
+    private FilteredStreamFrame toFinalMetadataFrame(
             FilteredStreamEvent event) {
-        // 推荐问是独立 METADATA 帧，只携带 suggestedQuery；应用服务保证
-        // 它位于最后一段正文之后、纯 DONE 帧之前。
+        // 推荐问和筛选后的 overRiskInfo 共用 DONE 前的 METADATA 帧。
         List<FilteredSuggestedQuery> queries =
                 dtoAssembler.assembleSuggestedQueries(
                         event.getRecommendationQueries());
         FilteredStreamFrameBody body = FilteredStreamFrameBody.builder()
                 .suggestedQuery(queries)
+                .overRiskInfo(dtoAssembler.assembleOverRiskInfo(
+                        event.getOverRiskInfo()))
                 .build();
         return FilteredStreamFrame.metadata(body);
     }

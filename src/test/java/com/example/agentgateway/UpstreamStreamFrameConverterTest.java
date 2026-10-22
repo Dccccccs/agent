@@ -122,6 +122,34 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
+    void shouldExtractOverRiskInfoAsTypedMetadata() {
+        String raw = "{\"status\":\"METADATA\",\"content\":{"
+                + "\"status\":\"NORMAL\",\"overRiskInfo\":{"
+                + "\"userRiskInfo\":{\"userIsMinor\":\"否\","
+                + "\"userRiskLevel\":\"A5\","
+                + "\"userRiskStatus\":\"已评估，在有效期内\"},"
+                + "\"productRiskInfo\":[{\"productName\":\"华夏成长\","
+                + "\"productCode\":\"000001\",\"bscRskLvl\":\"R4\"}]}}}";
+
+        UpstreamStreamFrame frame = converter.convert(raw);
+
+        assertEquals("A5", frame.getMetadataContent().getOverRiskInfo()
+                .getUserRiskInfo().getUserRiskLevel());
+        assertEquals("000001", frame.getMetadataContent().getOverRiskInfo()
+                .getProductRiskInfo().get(0).getProductCode());
+    }
+
+    @Test
+    void shouldRejectMalformedOverRiskProductList() {
+        String raw = "{\"status\":\"METADATA\",\"content\":{"
+                + "\"status\":\"NORMAL\",\"overRiskInfo\":{"
+                + "\"productRiskInfo\":{}}}}";
+
+        assertThrows(FilteredStreamException.class,
+                () -> converter.convert(raw));
+    }
+
+    @Test
     void shouldExtractStructuredFallbackAnswerFromMetadata() {
         String raw = "{\"label\":\"首帧数据\",\"status\":\"METADATA\"," 
                 + "\"content\":{\"status\":\"NORMAL\"," 

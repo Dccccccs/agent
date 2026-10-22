@@ -8,10 +8,13 @@ import com.example.agentgateway.domain.filteredstream.FundCardSource;
 import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
+import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProcessedCardMapping;
 import com.example.agentgateway.domain.filteredstream.ProcessedLinkMapping;
+import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.SuggestedQueryDefinition;
+import com.example.agentgateway.domain.filteredstream.UserRiskInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -184,6 +187,7 @@ public class UpstreamStreamFrameConverter {
                 .linkMapping(extractLinks(metadataBody))
                 .cardMapping(extractCards(metadataBody))
                 .fundList(extractFundList(metadataBody))
+                .overRiskInfo(extractOverRiskInfo(metadataBody))
                 .suggestedQuery(extractSuggestedQueries(metadataBody))
                 .fallbackAnswer(fallbackAnswer)
                 .status(MetadataStatus.NORMAL)
@@ -486,6 +490,56 @@ public class UpstreamStreamFrameConverter {
                 .subtitle(subtitle.isMissingNode() || subtitle.isNull()
                         ? "" : subtitle.asText())
                 .list(result)
+                .build();
+    }
+
+    /** 与 linkMapping/cardMapping 一样，只在首帧解析一次风险信息。 */
+    private OverRiskInfo extractOverRiskInfo(JsonNode metadataBody) {
+        JsonNode risk = metadataBody.path("overRiskInfo");
+        if (risk.isMissingNode() || risk.isNull()) {
+            return null;
+        }
+        if (!risk.isObject()) {
+            throw new UpstreamFrameException("Metadata.overRiskInfo 必须是对象");
+        }
+        JsonNode user = risk.path("userRiskInfo");
+        if (!user.isMissingNode() && !user.isNull() && !user.isObject()) {
+            throw new UpstreamFrameException(
+                    "Metadata.overRiskInfo.userRiskInfo 必须是对象");
+        }
+        UserRiskInfo userRiskInfo = user.isObject()
+                ? UserRiskInfo.builder()
+                        .userIsMinor(firstText(user.path("userIsMinor")))
+                        .userRiskLevel(firstText(user.path("userRiskLevel")))
+                        .userRiskStatus(firstText(user.path("userRiskStatus")))
+                        .build()
+                : null;
+        JsonNode products = risk.path("productRiskInfo");
+        if (!products.isArray()) {
+            throw new UpstreamFrameException(
+                    "Metadata.overRiskInfo.productRiskInfo 必须是数组");
+        }
+        List<ProductRiskInfo> productRiskInfo =
+                new ArrayList<ProductRiskInfo>();
+        for (JsonNode product : products) {
+            if (!product.isObject()) {
+                throw new UpstreamFrameException(
+                        "Metadata.overRiskInfo.productRiskInfo 元素必须是对象");
+            }
+            String code = firstText(product.path("productCode"));
+            if (isBlank(code)) {
+                throw new UpstreamFrameException(
+                        "Metadata.overRiskInfo.productRiskInfo.productCode 不能为空");
+            }
+            productRiskInfo.add(ProductRiskInfo.builder()
+                    .productName(firstText(product.path("productName")))
+                    .productCode(code)
+                    .bscRskLvl(firstText(product.path("bscRskLvl")))
+                    .build());
+        }
+        return OverRiskInfo.builder()
+                .userRiskInfo(userRiskInfo)
+                .productRiskInfo(Collections.unmodifiableList(productRiskInfo))
                 .build();
     }
 

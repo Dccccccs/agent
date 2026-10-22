@@ -16,6 +16,8 @@ import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.FundReference;
+import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
+import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.StreamFallbackRequestedException;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
@@ -27,8 +29,11 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 流过滤用例的应用层编排服务。
@@ -212,8 +217,8 @@ public class FilteredStreamService {
         // StreamingContentProcessor，执行跨帧敏感词、卡片和 URL 处理。
         if (Boolean.TRUE.equals(frame.getMetadata())) {
             validateMetadataPosition(context);
-            // 对外仍发送完整 Metadata；同时保留强类型首帧对象，
-            // 只供当前请求的后续内容校验与替换。
+            // 保留强类型首帧对象供后续校验、替换和末帧风险信息筛选；
+            // 首帧 JSON 仅交给接口层裁剪并发送。
             context.registerMetadata(frame.getMetadataContent());
             List<FallbackMessage> effectiveFallback =
                     resolveFallbackMessages(context.getMetadata());
@@ -307,14 +312,37 @@ public class FilteredStreamService {
             return Flux.fromIterable(events);
         }
 
-        // 推荐问只在正常完成时计算，并固定插入纯 DONE 的前一帧。
+        // 正常完成后统一输出末帧 Metadata：推荐问与按正文基金筛选的
+        // overRiskInfo 放在同一帧，且始终位于纯 DONE 之前。
         List<RecommendationQuery> recommendations =
                 buildRecommendations(context);
-        if (!recommendations.isEmpty()) {
-            events.add(FilteredStreamEvent.recommendations(recommendations));
+        OverRiskInfo matchedRiskInfo = buildMatchedRiskInfo(context);
+        if (!recommendations.isEmpty() || matchedRiskInfo != null) {
+            events.add(FilteredStreamEvent.recommendations(
+                    recommendations, matchedRiskInfo));
         }
         events.add(FilteredStreamEvent.done(context.getOriginContent()));
         return Flux.fromIterable(events);
+    }
+
+    private OverRiskInfo buildMatchedRiskInfo(
+            FilteredStreamProcessingContext context) {
+        OverRiskInfo source = context.getMetadata().getOverRiskInfo();
+        if (source == null) {
+            return null;
+        }
+        Set<String> referencedIds = new HashSet<String>(
+                context.getProcessor().getRecommendedFundIds());
+        List<ProductRiskInfo> matched = new ArrayList<ProductRiskInfo>();
+        for (ProductRiskInfo product : source.getProductRiskInfo()) {
+            if (referencedIds.contains(product.getProductCode())) {
+                matched.add(product);
+            }
+        }
+        return OverRiskInfo.builder()
+                .userRiskInfo(source.getUserRiskInfo())
+                .productRiskInfo(Collections.unmodifiableList(matched))
+                .build();
     }
 
     private List<RecommendationQuery> buildRecommendations(

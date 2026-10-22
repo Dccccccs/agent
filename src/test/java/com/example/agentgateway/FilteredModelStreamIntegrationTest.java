@@ -15,10 +15,13 @@ import com.example.agentgateway.domain.filteredstream.FundCardSource;
 import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.LinkDefinition;
 import com.example.agentgateway.domain.filteredstream.MetadataStatus;
+import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProcessedCardMapping;
 import com.example.agentgateway.domain.filteredstream.ProcessedLinkMapping;
+import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.SuggestedQueryDefinition;
+import com.example.agentgateway.domain.filteredstream.UserRiskInfo;
 import com.example.agentgateway.application.dto.AixzChatRequest;
 import com.example.agentgateway.interfaces.filteredstream.FilteredModelStreamController;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -522,7 +525,17 @@ class FilteredModelStreamIntegrationTest {
                 + "{\"fundId\":\"000002\",\"fundName\":\"基金二\","
                 + "\"fundDesc\":\"基金二描述\"},"
                 + "{\"fundId\":\"000003\",\"fundName\":\"未引用基金\","
-                + "\"fundDesc\":\"不应传给卡片API\"}]}},"
+                + "\"fundDesc\":\"不应传给卡片API\"}]},"
+                + "\"overRiskInfo\":{\"userRiskInfo\":{"
+                + "\"userIsMinor\":\"否\",\"userRiskLevel\":\"A5\","
+                + "\"userRiskStatus\":\"已评估，在有效期内\"},"
+                + "\"productRiskInfo\":["
+                + "{\"productName\":\"基金一\",\"productCode\":\"000001\","
+                + "\"bscRskLvl\":\"R4\"},"
+                + "{\"productName\":\"基金二\",\"productCode\":\"000002\","
+                + "\"bscRskLvl\":\"R2\"},"
+                + "{\"productName\":\"未引用基金\",\"productCode\":\"000003\","
+                + "\"bscRskLvl\":\"R1\"}]}},"
                 + "\"returnType\":\"METADATA\"}";
         StreamMetadata metadata = StreamMetadata.builder()
                 .fundList(FundCardSource.builder()
@@ -542,6 +555,29 @@ class FilteredModelStreamIntegrationTest {
                                         .fundId("000003")
                                         .fundName("未引用基金")
                                         .fundDesc("不应传给卡片API")
+                                        .build()))
+                        .build())
+                .overRiskInfo(OverRiskInfo.builder()
+                        .userRiskInfo(UserRiskInfo.builder()
+                                .userIsMinor("否")
+                                .userRiskLevel("A5")
+                                .userRiskStatus("已评估，在有效期内")
+                                .build())
+                        .productRiskInfo(Arrays.asList(
+                                ProductRiskInfo.builder()
+                                        .productName("基金一")
+                                        .productCode("000001")
+                                        .bscRskLvl("R4")
+                                        .build(),
+                                ProductRiskInfo.builder()
+                                        .productName("基金二")
+                                        .productCode("000002")
+                                        .bscRskLvl("R2")
+                                        .build(),
+                                ProductRiskInfo.builder()
+                                        .productName("未引用基金")
+                                        .productCode("000003")
+                                        .bscRskLvl("R1")
                                         .build()))
                         .build())
                 .status(MetadataStatus.NORMAL)
@@ -594,6 +630,27 @@ class FilteredModelStreamIntegrationTest {
                 stream.indexOf("前文") < stream.indexOf("card_combined_001"));
         org.junit.jupiter.api.Assertions.assertTrue(
                 stream.indexOf("card_combined_001") < stream.indexOf("后文"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                firstFrameBody(stream).has("overRiskInfo"));
+        int lastMetadataIndex = stream.lastIndexOf(
+                "\"returnType\":\"METADATA\"");
+        int doneIndex = stream.lastIndexOf("\"returnType\":\"DONE\"");
+        org.junit.jupiter.api.Assertions.assertTrue(lastMetadataIndex >
+                stream.indexOf("card_combined_001"));
+        org.junit.jupiter.api.Assertions.assertTrue(doneIndex > lastMetadataIndex);
+        int metadataFrameStart = stream.lastIndexOf("data:", lastMetadataIndex);
+        int metadataFrameEnd = stream.indexOf("\n\n", lastMetadataIndex);
+        JsonNode finalMetadata = OBJECT_MAPPER.readTree(
+                stream.substring(metadataFrameStart + 5, metadataFrameEnd));
+        JsonNode risk = finalMetadata.path("body").path("overRiskInfo");
+        org.junit.jupiter.api.Assertions.assertEquals("A5",
+                risk.path("userRiskInfo").path("userRiskLevel").asText());
+        org.junit.jupiter.api.Assertions.assertEquals(2,
+                risk.path("productRiskInfo").size());
+        org.junit.jupiter.api.Assertions.assertEquals("000001",
+                risk.path("productRiskInfo").path(0).path("productCode").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("000002",
+                risk.path("productRiskInfo").path(1).path("productCode").asText());
     }
 
     @Test

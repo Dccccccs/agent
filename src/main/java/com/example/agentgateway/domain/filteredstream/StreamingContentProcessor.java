@@ -5,9 +5,11 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -49,6 +51,9 @@ public class StreamingContentProcessor {
     private final StringBuilder structuredBuffer = new StringBuilder();
     private final List<FundDefinition> currentFundGroup =
             new ArrayList<FundDefinition>();
+    /** 已通过 fundList 校验并出现在完整卡片容器中的基金，按正文首次出现顺序去重。 */
+    private final Set<String> recommendedFundIds =
+            new LinkedHashSet<String>();
     // 只统计首个完整 li 到最后一个完整 li 的接收跨度，
     // 不把首个 li 自身、等待 </m-card>、卡片 API 和下游发送计入耗时。
     private Long firstLiCompletedAtNanos;
@@ -345,6 +350,11 @@ public class StreamingContentProcessor {
         return Optional.ofNullable(firstFundReference);
     }
 
+    public List<String> getRecommendedFundIds() {
+        return Collections.unmodifiableList(
+                new ArrayList<String>(recommendedFundIds));
+    }
+
     private ProcessedContentBlock resolveCard(String tag) {
         // 模型只允许输出 <m-card id='card_xxx' />；具体卡片数据必须来自
         // 本次请求的 Metadata.cardMapping。
@@ -438,6 +448,9 @@ public class StreamingContentProcessor {
                         .subtitle(metadata.getFundList().getSubtitle())
                         .list(currentFundGroup)
                         .build()));
+        for (FundDefinition fund : currentFundGroup) {
+            recommendedFundIds.add(fund.getFundId());
+        }
         log.info("基金卡片 li 列表接收耗时, elapsedMillis={}", elapsedMillis);
         currentFundGroup.clear();
         firstLiCompletedAtNanos = null;
@@ -788,6 +801,7 @@ public class StreamingContentProcessor {
                         .subtitle(nullToEmpty(sourceFundList.getSubtitle()))
                         .list(Collections.unmodifiableList(funds))
                         .build())
+                .overRiskInfo(source.getOverRiskInfo())
                 .fallbackAnswer(source.getFallbackAnswer())
                 .status(source.getStatus())
                 .build();
