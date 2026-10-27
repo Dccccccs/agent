@@ -92,7 +92,7 @@ class TextFormatValidationServiceTest {
     }
 
     @Test
-    void shouldAllowSubtitlesSeparatedByFullWidthColon() {
+    void shouldRejectSubtitlesSeparatedByFullWidthColon() {
         String input = section("重仓股变化", "重仓情况",
                 "一、重仓股变化：核心标的调整", "二、基金经理操作解析：未来展望")
                 + section("基金行业变化", "行业情况",
@@ -103,7 +103,27 @@ class TextFormatValidationServiceTest {
         TextFormatValidationResult result = service.validate(input,
                 FundChangeAnalysisValidationRule.SCENE);
 
+        assertFalse(result.getPassed());
+        assertTrue(result.getFailureReasons().stream()
+                .anyMatch(reason -> reason.contains("一、重仓股变化：核心标的调整")));
+    }
+
+    @Test
+    void shouldIgnoreMarkdownTrailingSpacesAndTabsInLevelOneHeadings() {
+        String input = section("重仓股变化", "重仓情况",
+                "一、重仓股变化  ", "二、基金经理操作解析\t")
+                + section("基金行业变化", "行业情况",
+                "一、基金持仓变化  ", "二、基金经理操作解析\t")
+                + section("仓位变化", "仓位情况",
+                "一、基金持仓变化  ", "二、基金经理操作解析\t");
+
+        TextFormatValidationResult result = service.validate(input,
+                FundChangeAnalysisValidationRule.SCENE);
+
         assertTrue(result.getPassed());
+        assertTrue(result.getSceneContents()
+                .get(FundChangeAnalysisValidationRule.HEAVY_STOCK_CHANGES)
+                .contains("# 一、重仓股变化  \n"));
     }
 
     @Test
@@ -200,16 +220,35 @@ class TextFormatValidationServiceTest {
     }
 
     @Test
-    void shouldRejectUnsupportedSceneAndOverlongOriginalText() {
+    void shouldRejectUnsupportedSceneWithoutApplyingAnotherSceneLengthRule() {
         String input = repeat("文本", 1600);
 
         TextFormatValidationResult result = service.validate(input, "UNKNOWN");
 
         assertFalse(result.getPassed());
         assertTrue(result.getProcessedText().length() > 3000);
-        assertEquals(2, result.getFailureReasons().size());
-        assertTrue(result.getFailureReasons().get(0).contains("实际为3200"));
-        assertTrue(result.getFailureReasons().get(1).contains("UNKNOWN"));
+        assertEquals(1, result.getFailureReasons().size());
+        assertTrue(result.getFailureReasons().get(0).contains("UNKNOWN"));
+    }
+
+    @Test
+    void shouldApplyOverallLengthLimitFromMatchedSceneRule() {
+        String input = section("重仓股变化", "重仓情况",
+                "一、重仓股变化", "二、基金经理操作解析")
+                + section("基金行业变化", "行业情况", "一、基金持仓变化",
+                "二、基金经理操作解析")
+                + section("仓位变化", "仓位情况", "一、基金持仓变化",
+                "二、基金经理操作解析")
+                + repeat("附", 4000);
+
+        TextFormatValidationResult result = service.validate(input,
+                FundChangeAnalysisValidationRule.SCENE);
+
+        assertFalse(result.getPassed());
+        assertEquals(1, result.getFailureReasons().size());
+        assertTrue(result.getFailureReasons().get(0)
+                .contains("场景“" + FundChangeAnalysisValidationRule.SCENE + "”"));
+        assertTrue(result.getFailureReasons().get(0).contains("3500"));
     }
 
     private String section(String tagName,

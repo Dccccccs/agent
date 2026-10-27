@@ -26,6 +26,8 @@ public class StreamMetadata {
     private final FundCardSource fundList;
     /** 首帧风险信息，正常结束时只输出答案中出现的产品。 */
     private final OverRiskInfo overRiskInfo;
+    /** 仅用于替换正文中的 <risk-tips />，不直接输出。 */
+    private final ThemeRiskTipInfo themeRiskTipInfo;
     /** 首帧暂存的推荐问，流结束前与接口动态构建的推荐问合并输出。 */
     @Singular(value = "suggestion", ignoreNullCollections = true)
     private final List<SuggestedQueryDefinition> suggestedQuery;

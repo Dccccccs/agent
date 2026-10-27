@@ -19,6 +19,8 @@ public class FundChangeAnalysisValidationRule
     public static final String FUND_INDUSTRY_CHANGES = "fundIndustryChanges";
     public static final String POSITION_CHANGES = "positionChanges";
 
+    private static final int MIN_TEXT_LENGTH = 50;
+    private static final int MAX_TEXT_LENGTH = 3500;
     private static final int MIN_SECTION_LENGTH = 50;
     private static final int MAX_SECTION_LENGTH = 1500;
     private static final String SUMMARY_OPEN_TAG = "<summary>";
@@ -38,6 +40,7 @@ public class FundChangeAnalysisValidationRule
         Map<String, String> extractedContents =
                 new LinkedHashMap<String, String>();
 
+        validateOverallLength(originalText, failureReasons);
         validateSection(originalText, processedText,
                 "重仓股变化", HEAVY_STOCK_CHANGES,
                 Arrays.asList("一、重仓股变化", "二、基金经理操作解析"),
@@ -53,6 +56,16 @@ public class FundChangeAnalysisValidationRule
 
         return new SceneTextValidationOutcome(extractedContents,
                 failureReasons);
+    }
+
+    private void validateOverallLength(String originalText,
+                                       List<String> failureReasons) {
+        int length = originalText.length();
+        if (length < MIN_TEXT_LENGTH || length > MAX_TEXT_LENGTH) {
+            failureReasons.add("场景“" + SCENE + "”的原始输入文本长度必须在"
+                    + MIN_TEXT_LENGTH + "到" + MAX_TEXT_LENGTH
+                    + "之间，实际为" + length);
+        }
     }
 
     private void validateSection(String originalText,
@@ -164,14 +177,13 @@ public class FundChangeAnalysisValidationRule
             if (count != 1) {
                 failureReasons.add("<" + tagName
                         + ">内必须且只能出现一次一级标题“" + headingPrefix
-                        + "”或“" + headingPrefix + "：副标题”，实际出现"
-                        + count + "次");
+                        + "”，实际出现" + count + "次");
             }
         }
 
         Matcher matcher = LEVEL_ONE_HEADING.matcher(content);
         while (matcher.find()) {
-            String heading = stripLineEnding(matcher.group());
+            String heading = normalizeHeading(matcher.group());
             if (!isAnyAllowedHeading(heading, allowedHeadingPrefixes)) {
                 failureReasons.add("<" + tagName + ">内存在不允许的Markdown一级标题“"
                         + heading + "”");
@@ -183,7 +195,7 @@ public class FundChangeAnalysisValidationRule
         Matcher matcher = LEVEL_ONE_HEADING.matcher(content);
         int count = 0;
         while (matcher.find()) {
-            String heading = stripLineEnding(matcher.group());
+            String heading = normalizeHeading(matcher.group());
             if (isAllowedHeading(heading, headingPrefix)) {
                 count++;
             }
@@ -203,15 +215,7 @@ public class FundChangeAnalysisValidationRule
     }
 
     private boolean isAllowedHeading(String heading, String headingPrefix) {
-        if (heading.equals(headingPrefix)) {
-            return true;
-        }
-        String subtitlePrefix = headingPrefix + "：";
-        if (!heading.startsWith(subtitlePrefix)) {
-            return false;
-        }
-        String subtitle = heading.substring(subtitlePrefix.length());
-        return !subtitle.isEmpty() && subtitle.equals(subtitle.trim());
+        return heading.equals(headingPrefix);
     }
 
     private int countOccurrences(String text, String target) {
@@ -240,9 +244,19 @@ public class FundChangeAnalysisValidationRule
         return content.length();
     }
 
-    private String stripLineEnding(String value) {
-        return value.endsWith("\r")
-                ? value.substring(0, value.length() - 1) : value;
+    private String normalizeHeading(String value) {
+        int end = value.length();
+        if (end > 0 && value.charAt(end - 1) == '\r') {
+            end--;
+        }
+        while (end > 0) {
+            char character = value.charAt(end - 1);
+            if (character != ' ' && character != '\t') {
+                break;
+            }
+            end--;
+        }
+        return value.substring(0, end);
     }
 
 }

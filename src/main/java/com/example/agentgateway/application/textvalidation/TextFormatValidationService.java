@@ -16,9 +16,6 @@ import java.util.Map;
 /** 文本敏感词替换、通用校验及场景校验的统一入口。 */
 @Service
 public class TextFormatValidationService {
-    private static final int MIN_TEXT_LENGTH = 50;
-    private static final int MAX_TEXT_LENGTH = 3000;
-
     private final SensitiveTextReplacer sensitiveTextReplacer;
     private final Map<String, SceneTextValidationRule> sceneRules;
 
@@ -31,8 +28,8 @@ public class TextFormatValidationService {
     }
 
     /**
-     * 先对全文执行敏感词替换，再按通用规则和指定场景规则校验。
-     * 长度始终以替换前的原始文本为准。
+     * 先对全文执行敏感词替换，再按指定场景规则校验。
+     * 全文及分段长度范围均由场景规则决定。
      */
     public TextFormatValidationResult validate(String text, String scene) {
         if (text == null) {
@@ -42,11 +39,6 @@ public class TextFormatValidationService {
 
         String processedText = sensitiveTextReplacer.replace(text);
         List<String> failureReasons = new ArrayList<String>();
-        if (text.length() < MIN_TEXT_LENGTH || text.length() > MAX_TEXT_LENGTH) {
-            failureReasons.add("原始输入文本长度必须在" + MIN_TEXT_LENGTH
-                    + "到" + MAX_TEXT_LENGTH + "之间，实际为" + text.length());
-        }
-
         SceneTextValidationRule rule = sceneRules.get(scene);
         if (rule == null) {
             failureReasons.add("不支持的文本校验场景：" + String.valueOf(scene));

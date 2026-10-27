@@ -21,6 +21,9 @@ import com.example.agentgateway.domain.filteredstream.ProcessedLinkMapping;
 import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.SuggestedQueryDefinition;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskFundInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskTipInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskUserInfo;
 import com.example.agentgateway.domain.filteredstream.UserRiskInfo;
 import com.example.agentgateway.application.dto.AixzChatRequest;
 import com.example.agentgateway.interfaces.filteredstream.FilteredModelStreamController;
@@ -49,6 +52,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -651,6 +655,70 @@ class FilteredModelStreamIntegrationTest {
                 risk.path("productRiskInfo").path(0).path("productCode").asText());
         org.junit.jupiter.api.Assertions.assertEquals("000002",
                 risk.path("productRiskInfo").path(1).path("productCode").asText());
+    }
+
+    @Test
+    void shouldReplaceRiskTipsAfterTwoFundCards() throws Exception {
+        String metadataJson = "{\"body\":{\"status\":\"NORMAL\","
+                + "\"themeRiskTipInfo\":{\"userInfo\":{\"riskLevel\":\"C5\"},"
+                + "\"fundList\":[]}},\"returnType\":\"METADATA\"}";
+        StreamMetadata metadata = StreamMetadata.builder()
+                .fundList(FundCardSource.builder().subtitle("")
+                        .list(Arrays.asList(
+                                FundDefinition.builder().fundId("000001")
+                                        .fundName("基金一").build(),
+                                FundDefinition.builder().fundId("000002")
+                                        .fundName("基金二").build()))
+                        .build())
+                .themeRiskTipInfo(ThemeRiskTipInfo.builder()
+                        .userInfo(ThemeRiskUserInfo.builder()
+                                .riskLevel("C5")
+                                .growthStyleStatus("OVER")
+                                .balanceStyleStatus("OVER")
+                                .build())
+                        .fundList(Arrays.asList(
+                                ThemeRiskFundInfo.builder().fundId("000001")
+                                        .riskLevel("R2").fundType("成长").build(),
+                                ThemeRiskFundInfo.builder().fundId("000002")
+                                        .riskLevel("R2").fundType("均衡").build()))
+                        .build())
+                .status(MetadataStatus.NORMAL)
+                .build();
+        when(fundCardPort.createCard(any()))
+                .thenReturn(FundCard.builder().cardId("card-one")
+                                .htmlContent("<div>一</div>").build(),
+                        FundCard.builder().cardId("card-two")
+                                .htmlContent("<div>二</div>").build());
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadataJson, metadata),
+                        UpstreamStreamFrame.content(
+                                "<m-card><li id='000001' /></m-card>"),
+                        UpstreamStreamFrame.content(
+                                "<m-card><li id='000002' /></m-card>"),
+                        UpstreamStreamFrame.content("<risk-"),
+                        UpstreamStreamFrame.content("tips />")));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"two-risk-cards\","
+                        + "\"uid\":\"u-1\",\"question\":\"基金组合\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String stream = result.getResponse().getContentAsString();
+        org.junit.jupiter.api.Assertions.assertFalse(
+                firstFrameBody(stream).has("themeRiskTipInfo"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                stream.indexOf("card-one") < stream.indexOf("card-two"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                stream.indexOf("card-two") < stream.indexOf("成长风格、均衡风格"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                dataFrameContent(stream).contains("上述基金为成长风格、均衡风格基金"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                dataFrameContent(stream).contains("<risk-tips />"));
+        verify(fundCardPort, times(2)).createCard(any());
     }
 
     @Test

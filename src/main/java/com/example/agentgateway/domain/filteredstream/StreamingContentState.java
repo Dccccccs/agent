@@ -4,7 +4,7 @@ package com.example.agentgateway.domain.filteredstream;
 public enum StreamingContentState {
     /** 普通文本，同时执行敏感词前缀检测。 */
     TEXT,
-    /** 已读到 '<'，正在判断它是否是受控结构标签。 */
+    /** 已读到 '<'，正在判断受控标签或 risk-tips 占位符。 */
     TAG_CANDIDATE,
     /** 已确认 '<m-card'，判断是已有自闭合卡片还是基金容器开始标签。 */
     CARD,

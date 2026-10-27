@@ -140,6 +140,26 @@ class UpstreamStreamFrameConverterTest {
     }
 
     @Test
+    void shouldExtractThemeRiskTipInfoWithLeadingZeroFundId() {
+        String raw = "{\"status\":\"METADATA\",\"content\":{"
+                + "\"status\":\"NORMAL\",\"themeRiskTipInfo\":{"
+                + "\"userInfo\":{\"riskLevel\":\"C5\","
+                + "\"isPrivate\":false,\"growthStyleStatus\":\"OVER\"},"
+                + "\"fundList\":[{\"fundId\":\"006281\","
+                + "\"riskLevel\":\"R2\",\"fundType\":\"成长\"}]}}}";
+
+        UpstreamStreamFrame frame = converter.convert(raw);
+
+        assertEquals("C5", frame.getMetadataContent().getThemeRiskTipInfo()
+                .getUserInfo().getRiskLevel());
+        assertEquals(Boolean.FALSE,
+                frame.getMetadataContent().getThemeRiskTipInfo()
+                        .getUserInfo().getIsPrivate());
+        assertEquals("006281", frame.getMetadataContent().getThemeRiskTipInfo()
+                .getFundList().get(0).getFundId());
+    }
+
+    @Test
     void shouldRejectMalformedOverRiskProductList() {
         String raw = "{\"status\":\"METADATA\",\"content\":{"
                 + "\"status\":\"NORMAL\",\"overRiskInfo\":{"

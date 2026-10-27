@@ -10,6 +10,9 @@ import com.example.agentgateway.domain.filteredstream.StreamContentProcessingExc
 import com.example.agentgateway.domain.filteredstream.StreamFallbackRequestedException;
 import com.example.agentgateway.domain.filteredstream.StreamReplacementCatalog;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskFundInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskTipInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskUserInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,6 +20,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -380,6 +384,57 @@ class StreamingContentProcessorTest {
     }
 
     @Test
+    void shouldReplaceRiskTipsAcrossFramesUsingOnlyFundCardItems() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(Collections::emptyMap);
+        fundProcessor.registerMetadata(StreamMetadata.builder()
+                .linkMapping(Collections.singletonList(link("000003", "链接基金")))
+                .fundList(fundList(fund("000001", "基金一"),
+                        fund("000002", "基金二")))
+                .themeRiskTipInfo(ThemeRiskTipInfo.builder()
+                        .userInfo(ThemeRiskUserInfo.builder()
+                                .riskLevel("C4")
+                                .growthStyleStatus("NOT_CONFIG")
+                                .balanceStyleStatus("OVER")
+                                .build())
+                        .fundList(Arrays.asList(
+                                themeFund("000001", "R2", "成长"),
+                                themeFund("000002", "R2", "均衡"),
+                                themeFund("000003", "R5", "成长")))
+                        .build())
+                .build());
+
+        assertEquals(1, fundProcessor.accept(
+                "<m-card><li id='000001' /></m-card>").size());
+        fundProcessor.accept("<url id=\"000003\" text=\"链接基金\" />");
+        assertTrue(fundProcessor.accept(
+                "<m-card><li id='000002' />").isEmpty());
+        assertTrue(fundProcessor.accept("</m-card>推荐<risk-").isEmpty());
+        List<ProcessedContentBlock> result = fundProcessor.accept("tips />后文");
+
+        assertEquals(2, result.size());
+        assertTrue(result.get(0).isFundCardGroup());
+        assertEquals("推荐上述基金为均衡风格基金，你目前在均衡风格上"
+                        + "配置比例较高，建议优化风格比例，分散风险。后文",
+                result.get(1).getContent());
+        assertEquals(Arrays.asList("000001", "000002"),
+                fundProcessor.getRecommendedFundIds());
+    }
+
+    @Test
+    void shouldRemoveRiskTipsMarkerWhenMetadataIsAbsent() {
+        StreamingContentProcessor fundProcessor =
+                new StreamingContentProcessor(Collections::emptyMap);
+        fundProcessor.registerMetadata(StreamMetadata.empty());
+
+        assertTrue(fundProcessor.accept("前文<risk-").isEmpty());
+        List<ProcessedContentBlock> result = fundProcessor.accept("tips />后文");
+
+        assertEquals(1, result.size());
+        assertEquals("前文后文", result.get(0).getContent());
+    }
+
+    @Test
     void shouldDeduplicateFundsWithinOneContinuousGroup() {
         StreamingContentProcessor fundProcessor =
                 new StreamingContentProcessor(new TestCatalog());
@@ -497,6 +552,14 @@ class StreamingContentProcessorTest {
         return FundCardSource.builder()
                 .subtitle("")
                 .list(Arrays.asList(funds))
+                .build();
+    }
+
+    private ThemeRiskFundInfo themeFund(String id, String risk, String style) {
+        return ThemeRiskFundInfo.builder()
+                .fundId(id)
+                .riskLevel(risk)
+                .fundType(style)
                 .build();
     }
 

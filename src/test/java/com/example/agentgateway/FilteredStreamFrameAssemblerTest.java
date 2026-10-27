@@ -106,7 +106,8 @@ class FilteredStreamFrameAssemblerTest {
                                 + "\"linkMapping\":[{\"linkId\":\"000001\"}],"
                                 + "\"cardMapping\":[{\"cardId\":\"card-1\"}],"
                                 + "\"suggestedQuery\":[{\"query\":\"旧推荐问\"}],"
-                                + "\"overRiskInfo\":{\"productRiskInfo\":[]}},"
+                                + "\"overRiskInfo\":{\"productRiskInfo\":[]},"
+                                + "\"themeRiskTipInfo\":{\"fundList\":[]}},"
                                 + "\"returnType\":\"METADATA\"}",
                         "request-r-5", fallbackMessages()));
 
@@ -114,6 +115,7 @@ class FilteredStreamFrameAssemblerTest {
         assertFalse(json.path("body").has("cardMapping"));
         assertFalse(json.path("body").has("suggestedQuery"));
         assertFalse(json.path("body").has("overRiskInfo"));
+        assertFalse(json.path("body").has("themeRiskTipInfo"));
         assertEquals("request-r-5",
                 json.path("body").path("recordId").asText());
         JsonNode fallbackAnswer = json.path("body").path("fallbackAnswer")

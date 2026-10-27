@@ -14,6 +14,9 @@ import com.example.agentgateway.domain.filteredstream.ProcessedLinkMapping;
 import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.SuggestedQueryDefinition;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskFundInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskTipInfo;
+import com.example.agentgateway.domain.filteredstream.ThemeRiskUserInfo;
 import com.example.agentgateway.domain.filteredstream.UserRiskInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -188,6 +191,7 @@ public class UpstreamStreamFrameConverter {
                 .cardMapping(extractCards(metadataBody))
                 .fundList(extractFundList(metadataBody))
                 .overRiskInfo(extractOverRiskInfo(metadataBody))
+                .themeRiskTipInfo(extractThemeRiskTipInfo(metadataBody))
                 .suggestedQuery(extractSuggestedQueries(metadataBody))
                 .fallbackAnswer(fallbackAnswer)
                 .status(MetadataStatus.NORMAL)
@@ -540,6 +544,52 @@ public class UpstreamStreamFrameConverter {
         return OverRiskInfo.builder()
                 .userRiskInfo(userRiskInfo)
                 .productRiskInfo(Collections.unmodifiableList(productRiskInfo))
+                .build();
+    }
+
+    /** themeRiskTipInfo 只在首帧解析一次，保留原始基金 ID 字符串中的前导零。 */
+    private ThemeRiskTipInfo extractThemeRiskTipInfo(JsonNode metadataBody) {
+        JsonNode risk = metadataBody.path("themeRiskTipInfo");
+        if (risk.isMissingNode() || risk.isNull()) {
+            return null;
+        }
+        if (!risk.isObject()) {
+            throw new UpstreamFrameException(
+                    "Metadata.themeRiskTipInfo 必须是对象");
+        }
+        JsonNode user = risk.path("userInfo");
+        if (!user.isObject()) {
+            throw new UpstreamFrameException(
+                    "Metadata.themeRiskTipInfo.userInfo 必须是对象");
+        }
+        ThemeRiskUserInfo userInfo = ThemeRiskUserInfo.builder()
+                .riskLevel(firstText(user.path("riskLevel")))
+                .isPrivate(user.path("isPrivate").isBoolean()
+                        ? user.path("isPrivate").booleanValue() : null)
+                .valueStyleStatus(firstText(user.path("valueStyleStatus")))
+                .balanceStyleStatus(firstText(user.path("balanceStyleStatus")))
+                .growthStyleStatus(firstText(user.path("growthStyleStatus")))
+                .build();
+        JsonNode funds = risk.path("fundList");
+        if (!funds.isArray()) {
+            throw new UpstreamFrameException(
+                    "Metadata.themeRiskTipInfo.fundList 必须是数组");
+        }
+        List<ThemeRiskFundInfo> fundList = new ArrayList<ThemeRiskFundInfo>();
+        for (JsonNode fund : funds) {
+            if (!fund.isObject() || isBlank(firstText(fund.path("fundId")))) {
+                throw new UpstreamFrameException(
+                        "Metadata.themeRiskTipInfo.fundList.fundId 不能为空");
+            }
+            fundList.add(ThemeRiskFundInfo.builder()
+                    .fundId(firstText(fund.path("fundId")))
+                    .riskLevel(firstText(fund.path("riskLevel")))
+                    .fundType(firstText(fund.path("fundType")))
+                    .build());
+        }
+        return ThemeRiskTipInfo.builder()
+                .userInfo(userInfo)
+                .fundList(Collections.unmodifiableList(fundList))
                 .build();
     }
 

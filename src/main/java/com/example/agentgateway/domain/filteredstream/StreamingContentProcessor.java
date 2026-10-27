@@ -25,6 +25,7 @@ public class StreamingContentProcessor {
     private static final String FUND_ITEM_PREFIX = "<li";
     private static final String FUND_CARD_END_PREFIX = "</m-card";
     private static final String FALLBACK_MARKER = "<fallback />";
+    private static final String RISK_TIPS_MARKER = "<risk-tips />";
     private static final int MAX_STRUCTURED_CONTENT_LENGTH = 8192;
     private static final Pattern CARD_PLACEHOLDER_PATTERN = Pattern.compile(
             "^card_[A-Za-z0-9_-]+$");
@@ -45,6 +46,8 @@ public class StreamingContentProcessor {
             Pattern.DOTALL);
 
     private final StreamReplacementCatalog catalog;
+    private final ThemeRiskTipResolver themeRiskTipResolver =
+            new ThemeRiskTipResolver();
     private final Map<String, String> sensitiveReplacements;
     private final List<String> sensitiveWords;
     private final StringBuilder sensitiveBuffer = new StringBuilder();
@@ -169,6 +172,13 @@ public class StreamingContentProcessor {
         if (FALLBACK_MARKER.equals(candidate)) {
             // 控制标记和同一上游帧中尚未释放的内容都不能进入 DATA。
             throw new StreamFallbackRequestedException();
+        } else if (RISK_TIPS_MARKER.equals(candidate)) {
+            // 占位符位于所有基金之后；只使用已完成的 m-card/li 组。
+            feedOrdinaryText(themeRiskTipResolver.resolve(
+                    metadata.getThemeRiskTipInfo(), recommendedFundIds),
+                    textOutput);
+            structuredBuffer.setLength(0);
+            state = StreamingContentState.TEXT;
         } else if (URL_PREFIX.equals(candidate)) {
             state = StreamingContentState.URL;
         } else if (CARD_PREFIX.equals(candidate)) {
@@ -181,7 +191,8 @@ public class StreamingContentProcessor {
                 && !CARD_PREFIX.startsWith(candidate)
                 && !FUND_ITEM_PREFIX.startsWith(candidate)
                 && !FUND_CARD_END_PREFIX.startsWith(candidate)
-                && !FALLBACK_MARKER.startsWith(candidate)) {
+                && !FALLBACK_MARKER.startsWith(candidate)
+                && !RISK_TIPS_MARKER.startsWith(candidate)) {
             // 例如 <Houseview> 不是受控标签，把缓存恢复为普通文本。
             state = StreamingContentState.TEXT;
             feedOrdinaryText(candidate, textOutput);
@@ -802,6 +813,7 @@ public class StreamingContentProcessor {
                         .list(Collections.unmodifiableList(funds))
                         .build())
                 .overRiskInfo(source.getOverRiskInfo())
+                .themeRiskTipInfo(source.getThemeRiskTipInfo())
                 .fallbackAnswer(source.getFallbackAnswer())
                 .status(source.getStatus())
                 .build();
