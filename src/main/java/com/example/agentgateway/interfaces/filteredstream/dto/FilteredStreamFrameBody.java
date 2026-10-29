@@ -20,6 +20,6 @@ public class FilteredStreamFrameBody {
     /** DONE 前的 METADATA 帧中，保留首帧原结构并筛选产品列表。 */
     private final FilteredOverRiskInfo overRiskInfo;
     private final String recordId;
-    /** 正常完成的 DONE 帧中，上游正文帧未经替换的拼接内容。 */
+    /** DONE 帧中已收到的上游正文原文；正常结束或中途兜底均可携带。 */
     private final String originContent;
 }

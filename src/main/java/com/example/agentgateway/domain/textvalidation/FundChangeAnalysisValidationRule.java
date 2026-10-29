@@ -15,9 +15,9 @@ import java.util.regex.Pattern;
 public class FundChangeAnalysisValidationRule
         implements SceneTextValidationRule {
     public static final String SCENE = "FUND_CHANGE_ANALYSIS";
-    public static final String HEAVY_STOCK_CHANGES = "heavyStockChanges";
-    public static final String FUND_INDUSTRY_CHANGES = "fundIndustryChanges";
-    public static final String POSITION_CHANGES = "positionChanges";
+    public static final String HEAVY_STOCK_CHANGES = "histockChange";
+    public static final String FUND_INDUSTRY_CHANGES = "industryChange";
+    public static final String POSITION_CHANGES = "positionChange";
 
     private static final int MIN_TEXT_LENGTH = 50;
     private static final int MAX_TEXT_LENGTH = 3500;

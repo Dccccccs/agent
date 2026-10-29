@@ -43,6 +43,11 @@ final class FilteredStreamProcessingContext {
         return originContent.toString();
     }
 
+    /** 尚未收到上游正文帧时不在 DONE 中输出 originContent。 */
+    String getOriginContentOrNull() {
+        return originFrameCount == 0 ? null : originContent.toString();
+    }
+
     StreamMetadata getMetadata() {
         return metadata;
     }

@@ -376,6 +376,9 @@ class FilteredModelStreamIntegrationTest {
                         .path("content").asText());
         org.junit.jupiter.api.Assertions.assertEquals("已输出。",
                 dataFrameContent(stream));
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "已输出。待处理<fallback />不可见",
+                doneFrame(stream).path("body").path("originContent").asText());
         org.junit.jupiter.api.Assertions.assertFalse(laterFrameSubscribed.get());
     }
 
@@ -739,6 +742,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertEquals("<li id='000001' />",
+                doneFrame(result.getResponse().getContentAsString())
+                        .path("body").path("originContent").asText());
         verify(fundCardPort, never()).createCard(any());
     }
 
@@ -784,6 +790,10 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "<m-card><li id='000001' text='' /></m-card>正文",
+                doneFrame(result.getResponse().getContentAsString())
+                        .path("body").path("originContent").asText());
     }
 
     @Test
@@ -819,6 +829,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertFalse(
+                doneFrame(result.getResponse().getContentAsString())
+                        .has("body"));
     }
 
     @Test
@@ -848,6 +861,9 @@ class FilteredModelStreamIntegrationTest {
                         "\"returnType\":\"DONE\"")))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertFalse(
+                doneFrame(result.getResponse().getContentAsString())
+                        .has("body"));
     }
 
     @Test
@@ -961,8 +977,10 @@ class FilteredModelStreamIntegrationTest {
         when(externalModelClient.openStream(
                 any(FilteredStreamRequestContext.class)))
                 .thenReturn(Flux.concat(
-                        Flux.just(UpstreamStreamFrame.metadata(metadata)),
-                        Flux.error(new IllegalStateException("流中异常"))));
+                        Flux.just(UpstreamStreamFrame.metadata(metadata),
+                                UpstreamStreamFrame.content("极"),
+                                UpstreamStreamFrame.content("端高")),
+                        Flux.error(new UpstreamFrameException("流中异常"))));
 
         MvcResult result = performAsync(post(ENDPOINT)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -976,10 +994,13 @@ class FilteredModelStreamIntegrationTest {
                 .andExpect(content().string(not(containsString("流中异常"))))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertEquals("极端高",
+                doneFrame(result.getResponse().getContentAsString())
+                        .path("body").path("originContent").asText());
     }
 
     @Test
-    void shouldReturnOriginalUpstreamContentOnlyInNormalDoneFrame()
+    void shouldReturnOriginalUpstreamContentInNormalDoneFrame()
             throws Exception {
         String metadata = "{\"body\":{\"status\":\"NORMAL\"},"
                 + "\"returnType\":\"METADATA\"}";
@@ -1082,7 +1103,8 @@ class FilteredModelStreamIntegrationTest {
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("body"));
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("message"));
         JsonNode done = doneFrame(stream);
-        org.junit.jupiter.api.Assertions.assertFalse(done.has("body"));
+        org.junit.jupiter.api.Assertions.assertEquals("DONE",
+                done.path("returnType").asText());
         org.junit.jupiter.api.Assertions.assertFalse(done.has("originContent"));
     }
 

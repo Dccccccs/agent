@@ -117,7 +117,7 @@ public class FilteredStreamService {
     private FilteredStreamExecution fallbackExecution(String recordId) {
         return FilteredStreamExecution.builder()
                 .messageId("")
-                .eventStream(fallbackThenDone(true, recordId))
+                .eventStream(fallbackThenDone(true, recordId, null))
                 .build();
     }
 
@@ -164,7 +164,8 @@ public class FilteredStreamService {
                                         context.getRecordId());
                                 return fallbackThenDone(
                                         !context.isMetadataForwarded(),
-                                        context.getRecordId());
+                                        context.getRecordId(),
+                                        context.getOriginContentOrNull());
                             })
                     .onErrorResume(throwable -> {
                         log.error(context.hasUpstreamFrameReceived()
@@ -173,14 +174,16 @@ public class FilteredStreamService {
                                         : "外部 API 在首帧前调用失败，已转换为 FALLBACK 帧和 DONE",
                                 throwable);
                         return fallbackThenDone(!context.isMetadataForwarded(),
-                                context.getRecordId());
+                                context.getRecordId(),
+                                context.getOriginContentOrNull());
                     });
         });
     }
 
     private Flux<FilteredStreamEvent> fallbackThenDone(
             boolean prependMetadata,
-            String recordId) {
+            String recordId,
+            String originContent) {
         List<FilteredStreamEvent> events =
                 new ArrayList<FilteredStreamEvent>();
         if (prependMetadata) {
@@ -190,7 +193,8 @@ public class FilteredStreamService {
                     recordId, fallbackProvider.fallbackMessages()));
         }
         events.add(FilteredStreamEvent.fallback());
-        events.add(FilteredStreamEvent.done());
+        // 兜底仅替换对外答案；已收到的模型原始正文仍随 DONE 留存。
+        events.add(FilteredStreamEvent.done(originContent));
         return Flux.fromIterable(events);
     }
 
@@ -286,12 +290,14 @@ public class FilteredStreamService {
     private Flux<FilteredStreamEvent> finishStream(
             FilteredStreamProcessingContext context) {
         if (context.isFallbackTerminated()) {
-            return Flux.just(FilteredStreamEvent.done());
+            return Flux.just(FilteredStreamEvent.done(
+                    context.getOriginContentOrNull()));
         }
         if (!context.isMetadataForwarded()) {
             // 上游正常完成但一帧也没有返回，按无首帧异常处理，保证中间
             // 至少存在一帧 DATA/FALLBACK，而不是直接从 METADATA 跳到 DONE。
-            return fallbackThenDone(true, context.getRecordId());
+            return fallbackThenDone(true, context.getRecordId(),
+                    context.getOriginContentOrNull());
         }
         List<ProcessedContentBlock> finalBlocks =
                 context.getProcessor().finish();
@@ -308,7 +314,8 @@ public class FilteredStreamService {
             // 上游只有 Metadata、没有任何可输出正文时，使用 FALLBACK 补齐
             // METADATA -> DATA/FALLBACK -> DONE 的完整序列。
             events.add(FilteredStreamEvent.fallback());
-            events.add(FilteredStreamEvent.done());
+            events.add(FilteredStreamEvent.done(
+                    context.getOriginContentOrNull()));
             return Flux.fromIterable(events);
         }
 
