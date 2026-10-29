@@ -195,12 +195,14 @@ class FilteredStreamFrameAssemblerTest {
     }
 
     @Test
-    void shouldReturnFallbackTypeWithoutDuplicatingAnswer() {
+    void shouldReturnFallbackReasonWithoutDuplicatingAnswer() {
         JsonNode json = new ObjectMapper().valueToTree(
-                assembler.toPayload(FilteredStreamEvent.fallback()));
+                assembler.toPayload(FilteredStreamEvent.fallback("内容校验失败")));
 
         assertEquals("FALLBACK", json.path("returnType").asText());
-        assertFalse(json.has("body"));
+        assertEquals("内容校验失败", json.path("body")
+                .path("fallbackReason").asText());
+        assertFalse(json.path("body").has("answer"));
         assertFalse(json.has("message"));
     }
 

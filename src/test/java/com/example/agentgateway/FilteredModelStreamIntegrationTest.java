@@ -193,6 +193,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"拒绝回答原因\""));
 
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
@@ -217,6 +220,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"请求参数不符合要求\""));
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
     }
@@ -244,6 +250,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"请求参数格式不正确\""));
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
     }
@@ -371,6 +380,8 @@ class FilteredModelStreamIntegrationTest {
 
         String stream = result.getResponse().getContentAsString();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(stream.contains(
+                "\"fallbackReason\":\"模型内容请求兜底\""));
         org.junit.jupiter.api.Assertions.assertEquals("模型指定兜底话术",
                 firstFrameBody(stream).path("fallbackAnswer").path(0)
                         .path("content").asText());
@@ -463,6 +474,9 @@ class FilteredModelStreamIntegrationTest {
                         "\"returnType\":\"DONE\"")))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"流式内容校验失败\""));
     }
 
     @Test
@@ -829,6 +843,9 @@ class FilteredModelStreamIntegrationTest {
                 .andReturn();
 
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"流式内容处理失败\""));
         org.junit.jupiter.api.Assertions.assertFalse(
                 doneFrame(result.getResponse().getContentAsString())
                         .has("body"));
@@ -861,6 +878,9 @@ class FilteredModelStreamIntegrationTest {
                         "\"returnType\":\"DONE\"")))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"外部 API 调用失败\""));
         org.junit.jupiter.api.Assertions.assertFalse(
                 doneFrame(result.getResponse().getContentAsString())
                         .has("body"));
@@ -909,6 +929,9 @@ class FilteredModelStreamIntegrationTest {
                         "上游 ERROR 帧"))))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertTrue(
+                result.getResponse().getContentAsString().contains(
+                        "\"fallbackReason\":\"上游返回错误帧或数据格式不符合要求\""));
     }
 
     @Test
@@ -966,6 +989,8 @@ class FilteredModelStreamIntegrationTest {
         org.junit.jupiter.api.Assertions.assertTrue(fallbackIndex > metadataIndex);
         org.junit.jupiter.api.Assertions.assertTrue(doneIndex > fallbackIndex);
         org.junit.jupiter.api.Assertions.assertFalse(laterFrameSubscribed.get());
+        org.junit.jupiter.api.Assertions.assertTrue(stream.contains(
+                "\"fallbackReason\":\"上游元数据要求兜底\""));
     }
 
     @Test
@@ -1100,7 +1125,12 @@ class FilteredModelStreamIntegrationTest {
                 stream.substring(fallbackStart + 5, fallbackEnd));
         org.junit.jupiter.api.Assertions.assertEquals(
                 "FALLBACK", fallback.path("returnType").asText());
-        org.junit.jupiter.api.Assertions.assertFalse(fallback.has("body"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                fallback.path("body").path("fallbackReason").isTextual());
+        org.junit.jupiter.api.Assertions.assertFalse(
+                fallback.path("body").path("fallbackReason").asText().isEmpty());
+        org.junit.jupiter.api.Assertions.assertFalse(
+                fallback.path("body").has("answer"));
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("message"));
         JsonNode done = doneFrame(stream);
         org.junit.jupiter.api.Assertions.assertEquals("DONE",

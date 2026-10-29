@@ -110,7 +110,7 @@ final class FilteredStreamSseSession {
             }
             emitter.send(SseEmitter.event().data(
                     frameAssembler.toPayload(
-                            FilteredStreamEvent.fallback()),
+                            FilteredStreamEvent.fallback("流式响应发送失败")),
                     MediaType.APPLICATION_JSON));
             // 传输层未预料异常也遵守“兜底紧邻 DONE”的终止协议。
             emitter.send(SseEmitter.event().data(

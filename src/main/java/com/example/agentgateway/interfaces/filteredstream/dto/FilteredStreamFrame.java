@@ -21,9 +21,14 @@ public class FilteredStreamFrame {
                 .body(body).returnType("METADATA").build();
     }
 
-    /** 兜底答案已随首帧下发，因此该帧只通知客户端切换到兜底回答。 */
-    public static FilteredStreamFrame fallback() {
-        return FilteredStreamFrame.builder().returnType("FALLBACK").build();
+    /** 兜底答案已随首帧下发，该帧通知客户端切换并说明原因。 */
+    public static FilteredStreamFrame fallback(String reason) {
+        return FilteredStreamFrame.builder()
+                .body(FilteredStreamFrameBody.builder()
+                        .fallbackReason(reason)
+                        .build())
+                .returnType("FALLBACK")
+                .build();
     }
 
     public static FilteredStreamFrame done() {

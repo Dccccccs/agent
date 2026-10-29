@@ -30,8 +30,10 @@ public class FilteredStreamEvent {
     private final OverRiskInfo overRiskInfo;
     /** 首帧预下发的结构化兜底回答。 */
     private final List<FallbackMessage> fallbackMessages;
-    /** 仅正常完成时携带的上游原始正文全文。 */
+    /** DONE 帧携带已收到的上游原始正文，正常结束或中途兜底均可使用。 */
     private final String originContent;
+    /** FALLBACK 帧向下游说明本次兜底的原因。 */
+    private final String fallbackReason;
 
     private FilteredStreamEvent(FilteredStreamEventType type,
                                 String metadataJson,
@@ -40,7 +42,8 @@ public class FilteredStreamEvent {
                                 List<RecommendationQuery> recommendationQueries,
                                 OverRiskInfo overRiskInfo,
                                 List<FallbackMessage> fallbackMessages,
-                                String originContent) {
+                                String originContent,
+                                String fallbackReason) {
         this.type = type;
         this.metadataJson = metadataJson;
         this.recordId = recordId;
@@ -49,6 +52,7 @@ public class FilteredStreamEvent {
         this.overRiskInfo = overRiskInfo;
         this.fallbackMessages = immutableFallbackMessages(fallbackMessages);
         this.originContent = originContent;
+        this.fallbackReason = fallbackReason;
     }
 
     public static FilteredStreamEvent metadata(String metadataJson,
@@ -56,7 +60,7 @@ public class FilteredStreamEvent {
                                                List<FallbackMessage> fallbackMessages) {
         return new FilteredStreamEvent(FilteredStreamEventType.METADATA,
                 metadataJson, recordId, null, null, null,
-                fallbackMessages, null);
+                fallbackMessages, null, null);
     }
 
     /**
@@ -71,7 +75,7 @@ public class FilteredStreamEvent {
 
     public static FilteredStreamEvent content(ProcessedContentBlock block) {
         return new FilteredStreamEvent(FilteredStreamEventType.CONTENT,
-                null, null, block, null, null, null, null);
+                null, null, block, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent recommendations(
@@ -87,22 +91,25 @@ public class FilteredStreamEvent {
                 Collections.unmodifiableList(
                         new ArrayList<RecommendationQuery>(
                                 recommendationQueries)),
-                overRiskInfo, null, null);
+                overRiskInfo, null, null, null);
     }
 
-    public static FilteredStreamEvent fallback() {
+    public static FilteredStreamEvent fallback(String reason) {
+        if (reason == null || reason.trim().isEmpty()) {
+            throw new IllegalArgumentException("兜底原因不能为空");
+        }
         return new FilteredStreamEvent(FilteredStreamEventType.FALLBACK,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, reason);
     }
 
     public static FilteredStreamEvent done() {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent done(String originContent) {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, null, originContent);
+                null, null, null, null, null, null, originContent, null);
     }
 
     private static List<FallbackMessage> immutableFallbackMessages(

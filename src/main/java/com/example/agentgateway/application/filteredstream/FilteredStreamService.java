@@ -20,6 +20,7 @@ import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
 import com.example.agentgateway.domain.filteredstream.StreamFallbackRequestedException;
+import com.example.agentgateway.domain.filteredstream.StreamContentProcessingException;
 import com.example.agentgateway.domain.filteredstream.StreamingContentProcessor;
 import com.example.agentgateway.application.dto.AixzChatRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -82,11 +83,13 @@ public class FilteredStreamService {
                 ? null : requestContext.getIntentId();
         try {
             if (!hasRequiredFields(request, intentId)) {
-                return fallbackExecution(recordIdOf(request));
+                return fallbackExecution(recordIdOf(request), "请求参数不符合要求");
             }
             RequestValidationResult validation = requestValidator.validate(request);
             if (validation == null || !validation.isAccepted()) {
-                return fallbackExecution(recordIdOf(request));
+                return fallbackExecution(recordIdOf(request),
+                        validation == null ? "请求校验失败"
+                                : validation.getRefusalMessage());
             }
 
             String messageId = messageIdGenerator.generate();
@@ -104,7 +107,7 @@ public class FilteredStreamService {
         } catch (RuntimeException ex) {
             // 此处尚未创建外部 API 调用，因此 messageId 按协议返回空值。
             log.error("外部 API 调用前处理失败，已转换为兜底流", ex);
-            return fallbackExecution(recordIdOf(request));
+            return fallbackExecution(recordIdOf(request), "外部 API 调用前处理失败");
         }
     }
 
@@ -114,10 +117,11 @@ public class FilteredStreamService {
         return prepare(requestContext).getEventStream();
     }
 
-    private FilteredStreamExecution fallbackExecution(String recordId) {
+    private FilteredStreamExecution fallbackExecution(String recordId,
+                                                      String reason) {
         return FilteredStreamExecution.builder()
                 .messageId("")
-                .eventStream(fallbackThenDone(true, recordId, null))
+                .eventStream(fallbackThenDone(true, recordId, null, reason))
                 .build();
     }
 
@@ -165,7 +169,8 @@ public class FilteredStreamService {
                                 return fallbackThenDone(
                                         !context.isMetadataForwarded(),
                                         context.getRecordId(),
-                                        context.getOriginContentOrNull());
+                                        context.getOriginContentOrNull(),
+                                        "模型内容请求兜底");
                             })
                     .onErrorResume(throwable -> {
                         log.error(context.hasUpstreamFrameReceived()
@@ -175,7 +180,8 @@ public class FilteredStreamService {
                                 throwable);
                         return fallbackThenDone(!context.isMetadataForwarded(),
                                 context.getRecordId(),
-                                context.getOriginContentOrNull());
+                                context.getOriginContentOrNull(),
+                                fallbackReasonFor(throwable, context));
                     });
         });
     }
@@ -183,7 +189,8 @@ public class FilteredStreamService {
     private Flux<FilteredStreamEvent> fallbackThenDone(
             boolean prependMetadata,
             String recordId,
-            String originContent) {
+            String originContent,
+            String reason) {
         List<FilteredStreamEvent> events =
                 new ArrayList<FilteredStreamEvent>();
         if (prependMetadata) {
@@ -192,10 +199,24 @@ public class FilteredStreamService {
             events.add(FilteredStreamEvent.emptyMetadata(
                     recordId, fallbackProvider.fallbackMessages()));
         }
-        events.add(FilteredStreamEvent.fallback());
+        events.add(FilteredStreamEvent.fallback(reason));
         // 兜底仅替换对外答案；已收到的模型原始正文仍随 DONE 留存。
         events.add(FilteredStreamEvent.done(originContent));
         return Flux.fromIterable(events);
+    }
+
+    private String fallbackReasonFor(Throwable throwable,
+                                     FilteredStreamProcessingContext context) {
+        if (throwable instanceof UpstreamFrameException) {
+            return "上游返回错误帧或数据格式不符合要求";
+        }
+        if (!context.hasUpstreamFrameReceived()) {
+            return "外部 API 调用失败";
+        }
+        if (throwable instanceof StreamContentProcessingException) {
+            return "流式内容校验失败";
+        }
+        return "流式内容处理失败";
     }
 
     private boolean hasRequiredFields(AixzChatRequest request,
@@ -236,7 +257,8 @@ public class FilteredStreamService {
                                         frame.getMetadataJson(),
                                         context.getRecordId(),
                                         effectiveFallback)),
-                        Flux.just(FilteredStreamEvent.fallback()));
+                        Flux.just(FilteredStreamEvent.fallback(
+                                "上游元数据要求兜底")));
             }
             // Processor 是单次订阅独占实例，注册的 Metadata
             // 业务数据不会污染其他请求。
@@ -297,7 +319,7 @@ public class FilteredStreamService {
             // 上游正常完成但一帧也没有返回，按无首帧异常处理，保证中间
             // 至少存在一帧 DATA/FALLBACK，而不是直接从 METADATA 跳到 DONE。
             return fallbackThenDone(true, context.getRecordId(),
-                    context.getOriginContentOrNull());
+                    context.getOriginContentOrNull(), "上游未返回内容");
         }
         List<ProcessedContentBlock> finalBlocks =
                 context.getProcessor().finish();
@@ -313,7 +335,7 @@ public class FilteredStreamService {
         if (!context.hasContentProduced()) {
             // 上游只有 Metadata、没有任何可输出正文时，使用 FALLBACK 补齐
             // METADATA -> DATA/FALLBACK -> DONE 的完整序列。
-            events.add(FilteredStreamEvent.fallback());
+            events.add(FilteredStreamEvent.fallback("上游未生成有效答案"));
             events.add(FilteredStreamEvent.done(
                     context.getOriginContentOrNull()));
             return Flux.fromIterable(events);

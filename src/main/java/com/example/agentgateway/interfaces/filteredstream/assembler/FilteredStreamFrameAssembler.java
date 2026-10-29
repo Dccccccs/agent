@@ -50,7 +50,7 @@ public class FilteredStreamFrameAssembler {
             case RECOMMENDATION:
                 return toFinalMetadataFrame(event);
             case FALLBACK:
-                return FilteredStreamFrame.fallback();
+                return FilteredStreamFrame.fallback(event.getFallbackReason());
             case DONE:
                 return FilteredStreamFrame.done(event.getOriginContent());
             default:
@@ -94,8 +94,8 @@ public class FilteredStreamFrameAssembler {
                             "linkMapping", "cardMapping", "fundList",
                             "suggestedQuery", "overRiskInfo",
                             "themeRiskTipInfo"));
-            // 客户端在首帧即可拿到完整兜底回答；后续 FALLBACK 帧只发送
-            // 类型通知，不再重复发送答案内容。
+            // 客户端在首帧即可拿到完整兜底回答；后续 FALLBACK 帧只说明
+            // 兜底原因，不再重复发送答案内容。
             ((ObjectNode) body).set("fallbackAnswer",
                     objectMapper.valueToTree(
                             dtoAssembler

@@ -59,7 +59,8 @@ public class FilteredStreamRequestErrorHandler {
                         FilteredStreamEvent.emptyMetadata(
                                 "", fallbackProvider.fallbackMessages())));
         String fallback = objectMapper.writeValueAsString(
-                frameAssembler.toPayload(FilteredStreamEvent.fallback()));
+                frameAssembler.toPayload(FilteredStreamEvent.fallback(
+                        "请求参数格式不正确")));
         String done = objectMapper.writeValueAsString(
                 frameAssembler.toPayload(FilteredStreamEvent.done()));
         String body = "data:" + metadata + "\n\n"
