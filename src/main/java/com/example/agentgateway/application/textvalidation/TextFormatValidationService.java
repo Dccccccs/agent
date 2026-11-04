@@ -32,6 +32,15 @@ public class TextFormatValidationService {
      * 全文及分段长度范围均由场景规则决定。
      */
     public TextFormatValidationResult validate(String text, String scene) {
+        return validate(text, scene, null);
+    }
+
+    /**
+     * 先对全文执行敏感词替换，再按指定场景和内容类型执行校验。
+     */
+    public TextFormatValidationResult validate(String text,
+                                               String scene,
+                                               String type) {
         if (text == null) {
             return TextFormatValidationResult.failed(null,
                     Collections.singletonList("输入文本不能为空"));
@@ -46,7 +55,8 @@ public class TextFormatValidationService {
                     failureReasons);
         }
 
-        SceneTextValidationOutcome outcome = rule.validate(text, processedText);
+        SceneTextValidationOutcome outcome = rule.validate(
+                text, processedText, type);
         failureReasons.addAll(outcome.getFailureReasons());
         if (!failureReasons.isEmpty()) {
             return TextFormatValidationResult.failed(processedText,

@@ -34,8 +34,10 @@ public class StreamMetadata {
     /** 上游首帧提供的结构化兜底答案块列表。 */
     @Singular(value = "fallback", ignoreNullCollections = true)
     private final List<FallbackMessage> fallbackAnswer;
-    /** 上游首帧 content.status，值为 NORMAL 或 FALLBACK。 */
+    /** 上游首帧 content.status，值为 NORMAL、FALLBACK 或 REFUSE。 */
     private final MetadataStatus status;
+    /** 上游首帧提供的错误说明，用于后续 FALLBACK/REFUSE 帧。 */
+    private final String errorMsg;
 
     public static StreamMetadata empty() {
         return StreamMetadata.builder()
@@ -46,6 +48,10 @@ public class StreamMetadata {
 
     public boolean requestsFallback() {
         return status == MetadataStatus.FALLBACK;
+    }
+
+    public boolean requestsRefuse() {
+        return status == MetadataStatus.REFUSE;
     }
 
     public Optional<LinkDefinition> findLink(String linkId) {

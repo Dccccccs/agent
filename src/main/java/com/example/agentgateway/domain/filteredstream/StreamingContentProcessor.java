@@ -57,6 +57,9 @@ public class StreamingContentProcessor {
     /** 已通过 fundList 校验并出现在完整卡片容器中的基金，按正文首次出现顺序去重。 */
     private final Set<String> recommendedFundIds =
             new LinkedHashSet<String>();
+    /** 推荐问只取完整卡片容器中最先出现的两个 li，保留原始出现顺序。 */
+    private final List<String> firstFundItemIds = new ArrayList<String>(2);
+    private final List<String> currentFundItemIds = new ArrayList<String>(2);
     // 只统计首个完整 li 到最后一个完整 li 的接收跨度，
     // 不把首个 li 自身、等待 </m-card>、卡片 API 和下游发送计入耗时。
     private Long firstLiCompletedAtNanos;
@@ -215,6 +218,7 @@ public class StreamingContentProcessor {
             state = StreamingContentState.TEXT;
         } else if (FUND_CARD_OPEN_PATTERN.matcher(tag).matches()) {
             currentFundGroup.clear();
+            currentFundItemIds.clear();
             firstLiCompletedAtNanos = null;
             lastLiCompletedAtNanos = null;
             state = StreamingContentState.FUND_CARD_BODY;
@@ -366,6 +370,11 @@ public class StreamingContentProcessor {
                 new ArrayList<String>(recommendedFundIds));
     }
 
+    public List<String> getFirstFundItemIds() {
+        return Collections.unmodifiableList(
+                new ArrayList<String>(firstFundItemIds));
+    }
+
     private ProcessedContentBlock resolveCard(String tag) {
         // 模型只允许输出 <m-card id='card_xxx' />；具体卡片数据必须来自
         // 本次请求的 Metadata.cardMapping。
@@ -428,6 +437,9 @@ public class StreamingContentProcessor {
         if (!fund.isPresent()) {
             throw fail("li 中的基金不在 Metadata.fundList 中, fundId=" + fundId);
         }
+        if (firstFundItemIds.size() + currentFundItemIds.size() < 2) {
+            currentFundItemIds.add(fundId);
+        }
         for (FundDefinition existing : currentFundGroup) {
             if (existing.getFundId().equals(fundId)) {
                 return;
@@ -462,6 +474,8 @@ public class StreamingContentProcessor {
         for (FundDefinition fund : currentFundGroup) {
             recommendedFundIds.add(fund.getFundId());
         }
+        firstFundItemIds.addAll(currentFundItemIds);
+        currentFundItemIds.clear();
         log.info("基金卡片 li 列表接收耗时, elapsedMillis={}", elapsedMillis);
         currentFundGroup.clear();
         firstLiCompletedAtNanos = null;
@@ -816,6 +830,7 @@ public class StreamingContentProcessor {
                 .themeRiskTipInfo(source.getThemeRiskTipInfo())
                 .fallbackAnswer(source.getFallbackAnswer())
                 .status(source.getStatus())
+                .errorMsg(source.getErrorMsg())
                 .build();
     }
 

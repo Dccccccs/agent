@@ -214,18 +214,37 @@ class UpstreamStreamFrameConverterTest {
             throws Exception {
         String raw = "{\"label\":\"首帧数据\",\"status\":\"METADATA\"," 
                 + "\"content\":\"{\\\"status\\\":\\\"FALLBACK\\\"," 
-                + "\\\"reason\\\":\\\"模型要求兜底\\\"}\"}";
+                + "\\\"reason\\\":\\\"模型要求兜底\\\","
+                + "\\\"errorMsg\\\":\\\"上游说明\\\"}\"}";
 
         UpstreamStreamFrame frame = converter.convert(raw);
 
         assertTrue(frame.getMetadata());
         assertTrue(frame.getMetadataContent().requestsFallback());
+        assertEquals("上游说明", frame.getMetadataContent().getErrorMsg());
         assertEquals("FALLBACK", new ObjectMapper()
                 .readTree(frame.getMetadataJson()).path("body")
                 .path("status").asText());
         assertEquals("模型要求兜底", new ObjectMapper()
                 .readTree(frame.getMetadataJson()).path("body")
                 .path("reason").asText());
+    }
+
+    @Test
+    void shouldReadRefuseInstructionWithoutValidatingUnusedMappings()
+            throws Exception {
+        String raw = "{\"status\":\"METADATA\",\"content\":\"{"
+                + "\\\"status\\\":\\\"REFUSE\\\","
+                + "\\\"refuseMsg\\\":\\\"暂不回答\\\","
+                + "\\\"fundList\\\":\\\"无须解析\\\"}\"}";
+
+        UpstreamStreamFrame frame = converter.convert(raw);
+
+        assertTrue(frame.getMetadata());
+        assertTrue(frame.getMetadataContent().requestsRefuse());
+        assertEquals("暂不回答", new ObjectMapper()
+                .readTree(frame.getMetadataJson()).path("body")
+                .path("refuseMsg").asText());
     }
 
     @Test
@@ -260,7 +279,7 @@ class UpstreamStreamFrameConverterTest {
                                 + "\"content\":\"{\\\"status\\\":"
                                 + "\\\"UNKNOWN\\\"}\"}"));
 
-        assertTrue(exception.getMessage().contains("NORMAL 或 FALLBACK"));
+        assertTrue(exception.getMessage().contains("REFUSE"));
     }
 
     @Test

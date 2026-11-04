@@ -4,6 +4,7 @@ import com.example.agentgateway.application.textvalidation.TextFormatValidationS
 import com.example.agentgateway.application.textvalidation.model.TextFormatValidationResult;
 import com.example.agentgateway.domain.filteredstream.StreamReplacementCatalog;
 import com.example.agentgateway.domain.textvalidation.FundChangeAnalysisValidationRule;
+import com.example.agentgateway.domain.textvalidation.FundInvestStrategyValidationRule;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -21,7 +22,8 @@ class TextFormatValidationServiceTest {
     @BeforeEach
     void setUp() {
         service = new TextFormatValidationService(new TestCatalog(),
-                Arrays.asList(new FundChangeAnalysisValidationRule()));
+                Arrays.asList(new FundChangeAnalysisValidationRule(),
+                        new FundInvestStrategyValidationRule()));
     }
 
     @Test

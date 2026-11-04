@@ -317,6 +317,8 @@ class StreamingContentProcessorTest {
                 blocks.get(1).getFundCardSource().getList().get(1).getFundDesc());
         assertEquals(Arrays.asList("000001", "000002"),
                 fundProcessor.getRecommendedFundIds());
+        assertEquals(Arrays.asList("000001", "000002"),
+                fundProcessor.getFirstFundItemIds());
         assertEquals("后文", blocks.get(2).getContent());
         assertTrue(output.getOut().contains(
                 "基金卡片 li 列表接收耗时, elapsedMillis="));

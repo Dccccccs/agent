@@ -14,8 +14,7 @@ import com.example.agentgateway.application.filteredstream.port.FilteredStreamRe
 import com.example.agentgateway.application.filteredstream.port.FundCardPort;
 import com.example.agentgateway.domain.filteredstream.ProcessedContentBlock;
 import com.example.agentgateway.domain.filteredstream.FallbackMessage;
-import com.example.agentgateway.domain.filteredstream.LinkDefinition;
-import com.example.agentgateway.domain.filteredstream.FundReference;
+import com.example.agentgateway.domain.filteredstream.FundDefinition;
 import com.example.agentgateway.domain.filteredstream.OverRiskInfo;
 import com.example.agentgateway.domain.filteredstream.ProductRiskInfo;
 import com.example.agentgateway.domain.filteredstream.StreamMetadata;
@@ -149,15 +148,16 @@ public class FilteredStreamService {
                                     frame.getContent());
                         }
                     })
-                    // status=FALLBACK 的首帧仍要交给 processFrame 输出；随后
-                    // takeUntil 立即取消上游订阅，避免模型继续生成正文。
+                    // FALLBACK/REFUSE 首帧先交给 processFrame 输出；随后
+                    // takeUntil 取消上游订阅，避免继续生成正文。
                     .takeUntil(frame -> Boolean.TRUE.equals(frame.getMetadata())
-                            && frame.getMetadataContent().requestsFallback())
+                            && (frame.getMetadataContent().requestsFallback()
+                            || frame.getMetadataContent().requestsRefuse()))
                     // concatMap 保证上游帧严格串行处理，不能用 flatMap 打乱顺序。
                     // prefetch=1 使卡片 API 调用期间向上游施加背压，避免后续
                     // 模型帧在内存中大量排队。
                     .concatMap(frame -> processFrame(context, frame), 1)
-                    // 正常完成时刷出缓存、推荐问和 DONE；主动兜底时只补 DONE。
+                    // 正常完成时刷出缓存、推荐问和 DONE；主动终止时只补 DONE。
                     .concatWith(Flux.defer(() -> finishStream(context)))
                     .onErrorResume(StreamFallbackRequestedException.class,
                             ignored -> {
@@ -170,7 +170,8 @@ public class FilteredStreamService {
                                         !context.isMetadataForwarded(),
                                         context.getRecordId(),
                                         context.getOriginContentOrNull(),
-                                        "模型内容请求兜底");
+                                        "模型内容请求兜底",
+                                        context.getMetadata().getErrorMsg());
                             })
                     .onErrorResume(throwable -> {
                         log.error(context.hasUpstreamFrameReceived()
@@ -181,7 +182,8 @@ public class FilteredStreamService {
                         return fallbackThenDone(!context.isMetadataForwarded(),
                                 context.getRecordId(),
                                 context.getOriginContentOrNull(),
-                                fallbackReasonFor(throwable, context));
+                                fallbackReasonFor(throwable, context),
+                                context.getMetadata().getErrorMsg());
                     });
         });
     }
@@ -191,6 +193,16 @@ public class FilteredStreamService {
             String recordId,
             String originContent,
             String reason) {
+        return fallbackThenDone(prependMetadata, recordId, originContent,
+                reason, null);
+    }
+
+    private Flux<FilteredStreamEvent> fallbackThenDone(
+            boolean prependMetadata,
+            String recordId,
+            String originContent,
+            String reason,
+            String errorMsg) {
         List<FilteredStreamEvent> events =
                 new ArrayList<FilteredStreamEvent>();
         if (prependMetadata) {
@@ -199,7 +211,7 @@ public class FilteredStreamService {
             events.add(FilteredStreamEvent.emptyMetadata(
                     recordId, fallbackProvider.fallbackMessages()));
         }
-        events.add(FilteredStreamEvent.fallback(reason));
+        events.add(FilteredStreamEvent.fallback(reason, errorMsg));
         // 兜底仅替换对外答案；已收到的模型原始正文仍随 DONE 留存。
         events.add(FilteredStreamEvent.done(originContent));
         return Flux.fromIterable(events);
@@ -247,18 +259,25 @@ public class FilteredStreamService {
             context.registerMetadata(frame.getMetadataContent());
             List<FallbackMessage> effectiveFallback =
                     resolveFallbackMessages(context.getMetadata());
-            if (context.getMetadata().requestsFallback()) {
-                // 首帧先按目标 JSON 对象协议输出，紧接 FALLBACK 通知；
+            if (context.getMetadata().requestsFallback()
+                    || context.getMetadata().requestsRefuse()) {
+                // 首帧先输出，再按状态发送 FALLBACK 或 REFUSE；
                 // finishStream 仅追加 DONE。
-                context.markFallbackTerminated();
+                context.markControlTerminated();
+                FilteredStreamEvent terminalEvent =
+                        context.getMetadata().requestsRefuse()
+                                ? FilteredStreamEvent.refuse(
+                                        context.getMetadata().getErrorMsg())
+                                : FilteredStreamEvent.fallback(
+                                        "上游元数据要求兜底",
+                                        context.getMetadata().getErrorMsg());
                 return Flux.concat(
                         forwardMetadata(context,
                                 FilteredStreamEvent.metadata(
                                         frame.getMetadataJson(),
                                         context.getRecordId(),
                                         effectiveFallback)),
-                        Flux.just(FilteredStreamEvent.fallback(
-                                "上游元数据要求兜底")));
+                        Flux.just(terminalEvent));
             }
             // Processor 是单次订阅独占实例，注册的 Metadata
             // 业务数据不会污染其他请求。
@@ -311,7 +330,7 @@ public class FilteredStreamService {
 
     private Flux<FilteredStreamEvent> finishStream(
             FilteredStreamProcessingContext context) {
-        if (context.isFallbackTerminated()) {
+        if (context.isControlTerminated()) {
             return Flux.just(FilteredStreamEvent.done(
                     context.getOriginContentOrNull()));
         }
@@ -335,7 +354,9 @@ public class FilteredStreamService {
         if (!context.hasContentProduced()) {
             // 上游只有 Metadata、没有任何可输出正文时，使用 FALLBACK 补齐
             // METADATA -> DATA/FALLBACK -> DONE 的完整序列。
-            events.add(FilteredStreamEvent.fallback("上游未生成有效答案"));
+            events.add(FilteredStreamEvent.fallback(
+                    "上游未生成有效答案",
+                    context.getMetadata().getErrorMsg()));
             events.add(FilteredStreamEvent.done(
                     context.getOriginContentOrNull()));
             return Flux.fromIterable(events);
@@ -380,37 +401,26 @@ public class FilteredStreamService {
                 new ArrayList<RecommendationQuery>(
                         recommendationQueryAssembler.assemble(
                                 context.getMetadata().getSuggestedQuery()));
-        RecommendationQuery generated = buildFundRecommendation(context);
-        if (generated != null) {
-            recommendations.add(generated);
-        }
+        recommendations.addAll(buildFundRecommendations(context));
         return recommendations;
     }
 
-    private RecommendationQuery buildFundRecommendation(
+    private List<RecommendationQuery> buildFundRecommendations(
             FilteredStreamProcessingContext context) {
-        // 使用正文中第一个符合 <url id="..." text="..." />
-        // 且通过 Metadata.linkMapping 校验的基金链接。
-        Optional<FundReference> reference =
-                context.getProcessor().getFirstFundReference();
-        if (!reference.isPresent()) {
-            return null;
+        // 只取完整 <m-card> 基金组中按正文顺序出现的前两个 <li> ID。
+        // 每个 ID 已通过首帧 fundList 校验；名称仍从首帧基金列表读取。
+        List<String> fundIds = context.getProcessor().getFirstFundItemIds();
+        List<RecommendationQuery> generated =
+                new ArrayList<RecommendationQuery>();
+        for (int index = 0; index < Math.min(2, fundIds.size()); index++) {
+            Optional<FundDefinition> fund =
+                    context.getMetadata().findFund(fundIds.get(index));
+            if (fund.isPresent() && !isBlank(fund.get().getFundName())) {
+                generated.add(new RecommendationQuery(
+                        "深度解读" + fund.get().getFundName(), "null"));
+            }
         }
-        String fundId = reference.get().getFundId();
-        Optional<LinkDefinition> link =
-                context.getMetadata().findLink(fundId);
-        if (!link.isPresent()) {
-            return null;
-        }
-        String fundName = link.get().getLinkContent();
-        // 正常情况下名称来自 Metadata.linkMapping；这里保留领域引用作为防御性回退。
-        if (fundName == null || fundName.trim().isEmpty()) {
-            fundName = reference.get().getText();
-        }
-        if (fundName == null || fundName.trim().isEmpty()) {
-            return null;
-        }
-        return new RecommendationQuery("深度解读" + fundName, "null");
+        return generated;
     }
 
     private Flux<FilteredStreamEvent> eventsForBlocks(

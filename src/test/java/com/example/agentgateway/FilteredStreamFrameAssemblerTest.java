@@ -195,15 +195,40 @@ class FilteredStreamFrameAssemblerTest {
     }
 
     @Test
-    void shouldReturnFallbackReasonWithoutDuplicatingAnswer() {
+    void shouldReturnDefaultErrorMsgWithoutDuplicatingAnswer() {
         JsonNode json = new ObjectMapper().valueToTree(
                 assembler.toPayload(FilteredStreamEvent.fallback("内容校验失败")));
 
         assertEquals("FALLBACK", json.path("returnType").asText());
-        assertEquals("内容校验失败", json.path("body")
-                .path("fallbackReason").asText());
-        assertFalse(json.path("body").has("answer"));
+        assertEquals("内容校验失败", json.path("errorMsg").asText());
+        assertFalse(json.has("body"));
         assertFalse(json.has("message"));
+    }
+
+    @Test
+    void shouldReturnRefuseFrameWithDefaultErrorMsg() {
+        JsonNode json = new ObjectMapper().valueToTree(
+                assembler.toPayload(FilteredStreamEvent.refuse()));
+
+        assertEquals("REFUSE", json.path("returnType").asText());
+        assertEquals("拒绝回答", json.path("errorMsg").asText());
+        assertFalse(json.has("body"));
+        JsonNode blank = new ObjectMapper().valueToTree(
+                assembler.toPayload(FilteredStreamEvent.refuse(" ")));
+        assertEquals("拒绝回答", blank.path("errorMsg").asText());
+    }
+
+    @Test
+    void shouldAttachUpstreamErrorMsgToTerminalFrames() {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode fallback = mapper.valueToTree(assembler.toPayload(
+                FilteredStreamEvent.fallback("默认原因", "上游错误说明")));
+        JsonNode refuse = mapper.valueToTree(assembler.toPayload(
+                FilteredStreamEvent.refuse("拒答说明")));
+
+        assertEquals("上游错误说明", fallback.path("errorMsg").asText());
+        assertFalse(fallback.has("body"));
+        assertEquals("拒答说明", refuse.path("errorMsg").asText());
     }
 
     private List<FallbackMessage> fallbackMessages() {

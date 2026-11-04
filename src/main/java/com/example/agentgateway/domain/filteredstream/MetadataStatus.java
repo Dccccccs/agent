@@ -5,5 +5,7 @@ public enum MetadataStatus {
     /** 正常输出首帧并继续消费正文流。 */
     NORMAL,
     /** 输出首帧后终止上游，并追加兜底话术帧。 */
-    FALLBACK
+    FALLBACK,
+    /** 输出首帧后终止上游，并追加拒答通知帧。 */
+    REFUSE
 }

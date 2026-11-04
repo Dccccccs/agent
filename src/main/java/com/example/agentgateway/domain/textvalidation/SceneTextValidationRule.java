@@ -8,7 +8,9 @@ public interface SceneTextValidationRule {
     /**
      * @param originalText 原始文本，用于原始篇幅校验
      * @param processedText 完成敏感词替换后的文本，用于结构校验和内容提取
+     * @param type 场景内的内容类型；不需要类型的场景可以忽略
      */
     SceneTextValidationOutcome validate(String originalText,
-                                        String processedText);
+                                        String processedText,
+                                        String type);
 }

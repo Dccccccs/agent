@@ -22,6 +22,4 @@ public class FilteredStreamFrameBody {
     private final String recordId;
     /** DONE 帧中已收到的上游正文原文；正常结束或中途兜底均可携带。 */
     private final String originContent;
-    /** FALLBACK 帧说明触发兜底的原因。 */
-    private final String fallbackReason;
 }

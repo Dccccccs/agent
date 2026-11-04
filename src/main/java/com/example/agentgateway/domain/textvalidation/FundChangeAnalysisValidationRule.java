@@ -2,6 +2,7 @@ package com.example.agentgateway.domain.textvalidation;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -27,6 +28,21 @@ public class FundChangeAnalysisValidationRule
     private static final String SUMMARY_CLOSE_TAG = "</summary>";
     private static final Pattern LEVEL_ONE_HEADING = Pattern.compile(
             "(?m)^#(?!#)[ \\t]+[^\\r\\n]*\\r?$");
+    private static final List<FundChangeAnalysisSectionDefinition>
+            SECTION_DEFINITIONS =
+            Collections.unmodifiableList(Arrays.asList(
+                    new FundChangeAnalysisSectionDefinition(
+                            "重仓股变化",
+                            HEAVY_STOCK_CHANGES,
+                            Arrays.asList("一、重仓股变化", "二、基金经理操作解析")),
+                    new FundChangeAnalysisSectionDefinition(
+                            "基金行业变化",
+                            FUND_INDUSTRY_CHANGES,
+                            Arrays.asList("一、基金持仓变化", "二、基金经理操作解析")),
+                    new FundChangeAnalysisSectionDefinition(
+                            "仓位变化",
+                            POSITION_CHANGES,
+                            Arrays.asList("一、基金持仓变化", "二、基金经理操作解析"))));
 
     @Override
     public String scene() {
@@ -35,24 +51,18 @@ public class FundChangeAnalysisValidationRule
 
     @Override
     public SceneTextValidationOutcome validate(String originalText,
-                                               String processedText) {
+                                               String processedText,
+                                               String type) {
         List<String> failureReasons = new ArrayList<String>();
         Map<String, String> extractedContents =
                 new LinkedHashMap<String, String>();
 
         validateOverallLength(originalText, failureReasons);
-        validateSection(originalText, processedText,
-                "重仓股变化", HEAVY_STOCK_CHANGES,
-                Arrays.asList("一、重仓股变化", "二、基金经理操作解析"),
-                extractedContents, failureReasons);
-        validateSection(originalText, processedText,
-                "基金行业变化", FUND_INDUSTRY_CHANGES,
-                Arrays.asList("一、基金持仓变化", "二、基金经理操作解析"),
-                extractedContents, failureReasons);
-        validateSection(originalText, processedText,
-                "仓位变化", POSITION_CHANGES,
-                Arrays.asList("一、基金持仓变化", "二、基金经理操作解析"),
-                extractedContents, failureReasons);
+        for (FundChangeAnalysisSectionDefinition definition
+                : SECTION_DEFINITIONS) {
+            validateSection(originalText, processedText, definition,
+                    extractedContents, failureReasons);
+        }
 
         return new SceneTextValidationOutcome(extractedContents,
                 failureReasons);
@@ -70,25 +80,25 @@ public class FundChangeAnalysisValidationRule
 
     private void validateSection(String originalText,
                                  String processedText,
-                                 String tagName,
-                                 String fieldName,
-                                 List<String> allowedTitles,
+                                 FundChangeAnalysisSectionDefinition definition,
                                  Map<String, String> extractedContents,
                                  List<String> failureReasons) {
         Optional<String> processedContent = extractUniqueContent(
-                processedText, tagName, failureReasons);
+                processedText, definition.getTagName(), failureReasons);
         Optional<String> originalContent = extractUniqueContent(
-                originalText, tagName, null);
+                originalText, definition.getTagName(), null);
 
         if (originalContent.isPresent()) {
             int length = originalContent.get().length();
             if (length < MIN_SECTION_LENGTH || length > MAX_SECTION_LENGTH) {
-                failureReasons.add("<" + tagName + ">标签内的原始内容长度必须在"
+                failureReasons.add("<" + definition.getTagName()
+                        + ">标签内的原始内容长度必须在"
                         + MIN_SECTION_LENGTH + "到" + MAX_SECTION_LENGTH
                         + "之间，实际为" + length);
             }
         } else if (processedContent.isPresent()) {
-            failureReasons.add("无法从原始文本中唯一提取<" + tagName
+            failureReasons.add("无法从原始文本中唯一提取<"
+                    + definition.getTagName()
                     + ">标签内容，不能计算原始内容长度");
         }
 
@@ -96,9 +106,10 @@ public class FundChangeAnalysisValidationRule
             return;
         }
         String content = processedContent.get();
-        extractedContents.put(fieldName, content);
-        validateSummary(content, tagName, failureReasons);
-        validateTitles(content, tagName, allowedTitles, failureReasons);
+        extractedContents.put(definition.getFieldName(), content);
+        validateSummary(content, definition.getTagName(), failureReasons);
+        validateTitles(content, definition.getTagName(),
+                definition.getAllowedTitles(), failureReasons);
     }
 
     private Optional<String> extractUniqueContent(String text,

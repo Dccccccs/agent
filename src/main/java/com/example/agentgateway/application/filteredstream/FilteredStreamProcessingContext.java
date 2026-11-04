@@ -17,7 +17,7 @@ final class FilteredStreamProcessingContext {
     private boolean metadataForwarded;
     private boolean contentStarted;
     private boolean upstreamFrameReceived;
-    private boolean fallbackTerminated;
+    private boolean controlTerminated;
     private boolean contentProduced;
 
     FilteredStreamProcessingContext(StreamingContentProcessor processor,
@@ -81,12 +81,12 @@ final class FilteredStreamProcessingContext {
         return upstreamFrameReceived;
     }
 
-    void markFallbackTerminated() {
-        fallbackTerminated = true;
+    void markControlTerminated() {
+        controlTerminated = true;
     }
 
-    boolean isFallbackTerminated() {
-        return fallbackTerminated;
+    boolean isControlTerminated() {
+        return controlTerminated;
     }
 
     void markContentProduced() {

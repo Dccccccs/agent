@@ -1,6 +1,7 @@
 package com.example.agentgateway.infrastructure.textvalidation;
 
 import com.example.agentgateway.domain.textvalidation.FundChangeAnalysisValidationRule;
+import com.example.agentgateway.domain.textvalidation.FundInvestStrategyValidationRule;
 import com.example.agentgateway.domain.textvalidation.SceneTextValidationRule;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,5 +12,10 @@ public class TextValidationConfiguration {
     @Bean
     public SceneTextValidationRule fundChangeAnalysisValidationRule() {
         return new FundChangeAnalysisValidationRule();
+    }
+
+    @Bean
+    public SceneTextValidationRule fundInvestStrategyValidationRule() {
+        return new FundInvestStrategyValidationRule();
     }
 }

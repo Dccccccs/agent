@@ -6,5 +6,6 @@ public enum FilteredStreamEventType {
     CONTENT,
     RECOMMENDATION,
     FALLBACK,
+    REFUSE,
     DONE
 }

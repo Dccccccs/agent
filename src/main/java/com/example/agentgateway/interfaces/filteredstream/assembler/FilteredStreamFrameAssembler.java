@@ -21,7 +21,7 @@ import java.util.List;
 
 /**
  * 接口层协议装配器。应用层只产生与传输协议无关的事件，本类负责将事件
- * 转换成对外约定的 METADATA、DATA、FALLBACK、DONE JSON 结构。
+ * 转换成对外约定的 METADATA、DATA、FALLBACK、REFUSE、DONE JSON 结构。
  */
 @Component
 public class FilteredStreamFrameAssembler {
@@ -50,7 +50,10 @@ public class FilteredStreamFrameAssembler {
             case RECOMMENDATION:
                 return toFinalMetadataFrame(event);
             case FALLBACK:
-                return FilteredStreamFrame.fallback(event.getFallbackReason());
+                return FilteredStreamFrame.fallback(event.getFallbackReason(),
+                        event.getErrorMsg());
+            case REFUSE:
+                return FilteredStreamFrame.refuse(event.getErrorMsg());
             case DONE:
                 return FilteredStreamFrame.done(event.getOriginContent());
             default:

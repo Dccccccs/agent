@@ -173,17 +173,20 @@ public class UpstreamStreamFrameConverter {
         // 真正需要的业务字段，二者不能相互替代。fallbackAnswer 解析失败
         // 不阻断主流，而是由应用层回退到配置兜底话术。
         MetadataStatus status = extractMetadataStatus(metadataBody);
+        String errorMsg = firstText(metadataBody.path("errorMsg"));
         List<FallbackMessage> fallbackAnswer =
                 extractFallbackAnswer(metadataBody);
-        if (status == MetadataStatus.FALLBACK) {
-            // 主动兜底首帧后不会再处理正文，因而不让无关的业务字段
-            // 校验阻断 FALLBACK 指令；原始 body 仍会完整向下游返回。
+        if (status == MetadataStatus.FALLBACK
+                || status == MetadataStatus.REFUSE) {
+            // 这两种首帧状态都不会继续处理正文；无关业务字段的校验
+            // 不能阻断终止指令，原始 Metadata body 仍交给接口层输出。
             return StreamMetadata.builder()
                     .linkMapping(new ArrayList<LinkDefinition>())
                     .cardMapping(new ArrayList<CardDefinition>())
                     .fundList(FundCardSource.empty())
                     .fallbackAnswer(fallbackAnswer)
-                    .status(MetadataStatus.FALLBACK)
+                    .status(status)
+                    .errorMsg(errorMsg)
                     .build();
         }
         return StreamMetadata.builder()
@@ -195,6 +198,7 @@ public class UpstreamStreamFrameConverter {
                 .suggestedQuery(extractSuggestedQueries(metadataBody))
                 .fallbackAnswer(fallbackAnswer)
                 .status(MetadataStatus.NORMAL)
+                .errorMsg(errorMsg)
                 .build();
     }
 
@@ -352,14 +356,14 @@ public class UpstreamStreamFrameConverter {
                 ? null : metadataBody.get("status");
         if (statusNode == null || !statusNode.isTextual()) {
             throw new UpstreamFrameException(
-                    "Metadata.status 必须为 NORMAL 或 FALLBACK");
+                    "Metadata.status 必须为 NORMAL、FALLBACK 或 REFUSE");
         }
         String value = statusNode.asText();
         try {
             return MetadataStatus.valueOf(value);
         } catch (IllegalArgumentException ex) {
             throw new UpstreamFrameException(
-                    "Metadata.status 必须为 NORMAL 或 FALLBACK, 实际值=" + value,
+                    "Metadata.status 必须为 NORMAL、FALLBACK 或 REFUSE, 实际值=" + value,
                     ex);
         }
     }

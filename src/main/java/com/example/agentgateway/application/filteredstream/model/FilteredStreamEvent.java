@@ -16,8 +16,8 @@ import java.util.List;
 public class FilteredStreamEvent {
     /**
      * 事件顺序由应用服务保证：METADATA -> CONTENT* -> RECOMMENDATION? -> DONE；
-     * 任意阶段失败时也保证 METADATA -> FALLBACK -> DONE。兜底答案已经在
-     * 首帧 fallbackAnswer 中下发，FALLBACK 事件本身只负责通知客户端切换。
+     * 任意阶段失败时保证 METADATA -> FALLBACK -> DONE；上游拒答时输出
+     * METADATA -> REFUSE -> DONE。兜底答案已经在首帧 fallbackAnswer 中下发。
      */
     private final FilteredStreamEventType type;
     /** 已规范化的上游首帧 JSON，仅供首帧输出。 */
@@ -34,6 +34,8 @@ public class FilteredStreamEvent {
     private final String originContent;
     /** FALLBACK 帧向下游说明本次兜底的原因。 */
     private final String fallbackReason;
+    /** 首帧提供的错误说明，仅在非空时附加到 FALLBACK/REFUSE 帧。 */
+    private final String errorMsg;
 
     private FilteredStreamEvent(FilteredStreamEventType type,
                                 String metadataJson,
@@ -43,7 +45,8 @@ public class FilteredStreamEvent {
                                 OverRiskInfo overRiskInfo,
                                 List<FallbackMessage> fallbackMessages,
                                 String originContent,
-                                String fallbackReason) {
+                                String fallbackReason,
+                                String errorMsg) {
         this.type = type;
         this.metadataJson = metadataJson;
         this.recordId = recordId;
@@ -53,6 +56,7 @@ public class FilteredStreamEvent {
         this.fallbackMessages = immutableFallbackMessages(fallbackMessages);
         this.originContent = originContent;
         this.fallbackReason = fallbackReason;
+        this.errorMsg = errorMsg;
     }
 
     public static FilteredStreamEvent metadata(String metadataJson,
@@ -60,7 +64,7 @@ public class FilteredStreamEvent {
                                                List<FallbackMessage> fallbackMessages) {
         return new FilteredStreamEvent(FilteredStreamEventType.METADATA,
                 metadataJson, recordId, null, null, null,
-                fallbackMessages, null, null);
+                fallbackMessages, null, null, null);
     }
 
     /**
@@ -75,7 +79,7 @@ public class FilteredStreamEvent {
 
     public static FilteredStreamEvent content(ProcessedContentBlock block) {
         return new FilteredStreamEvent(FilteredStreamEventType.CONTENT,
-                null, null, block, null, null, null, null, null);
+                null, null, block, null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent recommendations(
@@ -91,25 +95,38 @@ public class FilteredStreamEvent {
                 Collections.unmodifiableList(
                         new ArrayList<RecommendationQuery>(
                                 recommendationQueries)),
-                overRiskInfo, null, null, null);
+                overRiskInfo, null, null, null, null);
     }
 
     public static FilteredStreamEvent fallback(String reason) {
+        return fallback(reason, null);
+    }
+
+    public static FilteredStreamEvent fallback(String reason, String errorMsg) {
         if (reason == null || reason.trim().isEmpty()) {
             throw new IllegalArgumentException("兜底原因不能为空");
         }
         return new FilteredStreamEvent(FilteredStreamEventType.FALLBACK,
-                null, null, null, null, null, null, null, reason);
+                null, null, null, null, null, null, null, reason, errorMsg);
+    }
+
+    public static FilteredStreamEvent refuse() {
+        return refuse(null);
+    }
+
+    public static FilteredStreamEvent refuse(String errorMsg) {
+        return new FilteredStreamEvent(FilteredStreamEventType.REFUSE,
+                null, null, null, null, null, null, null, null, errorMsg);
     }
 
     public static FilteredStreamEvent done() {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public static FilteredStreamEvent done(String originContent) {
         return new FilteredStreamEvent(FilteredStreamEventType.DONE,
-                null, null, null, null, null, null, originContent, null);
+                null, null, null, null, null, null, originContent, null, null);
     }
 
     private static List<FallbackMessage> immutableFallbackMessages(

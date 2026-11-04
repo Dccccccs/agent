@@ -195,7 +195,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"拒绝回答原因\""));
+                        "\"errorMsg\":\"拒绝回答原因\""));
 
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
@@ -222,7 +222,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"请求参数不符合要求\""));
+                        "\"errorMsg\":\"请求参数不符合要求\""));
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
     }
@@ -252,7 +252,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"请求参数格式不正确\""));
+                        "\"errorMsg\":\"请求参数格式不正确\""));
         verify(externalModelClient, never())
                 .openStream(any(FilteredStreamRequestContext.class));
     }
@@ -381,7 +381,7 @@ class FilteredModelStreamIntegrationTest {
         String stream = result.getResponse().getContentAsString();
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(stream.contains(
-                "\"fallbackReason\":\"模型内容请求兜底\""));
+                "\"errorMsg\":\"模型内容请求兜底\""));
         org.junit.jupiter.api.Assertions.assertEquals("模型指定兜底话术",
                 firstFrameBody(stream).path("fallbackAnswer").path(0)
                         .path("content").asText());
@@ -423,18 +423,18 @@ class FilteredModelStreamIntegrationTest {
                         "text=\\\"华夏成长\\\"")))
                 .andExpect(content().string(containsString(
                         "\"suggestedQuery\":[{\"query\":\"上游推荐问\"," 
-                                + "\"intent\":null},{\"query\":"
-                                + "\"深度解读华夏成长\","
-                                + "\"intent\":\"null\"}]")))
+                                + "\"intent\":null}]")))
                 .andReturn();
 
         String stream = result.getResponse().getContentAsString();
         org.junit.jupiter.api.Assertions.assertFalse(
                 dataFrameContent(stream).contains("模型输出名称"));
-        int recommendationIndex = stream.indexOf("深度解读华夏成长");
+        int recommendationIndex = stream.indexOf("上游推荐问");
         int recommendationMetadataIndex = stream.lastIndexOf(
                 "\"returnType\":\"METADATA\"");
         int doneIndex = stream.indexOf("\"returnType\":\"DONE\"");
+        org.junit.jupiter.api.Assertions.assertFalse(
+                stream.contains("深度解读华夏成长"));
         org.junit.jupiter.api.Assertions.assertTrue(recommendationIndex >= 0);
         org.junit.jupiter.api.Assertions.assertTrue(
                 recommendationMetadataIndex > recommendationIndex);
@@ -457,6 +457,71 @@ class FilteredModelStreamIntegrationTest {
     }
 
     @Test
+    void shouldRecommendFirstTwoFundGroupFundsInAppearanceOrder()
+            throws Exception {
+        String metadataJson = "{\"body\":{\"status\":\"NORMAL\"},"
+                + "\"returnType\":\"METADATA\"}";
+        StreamMetadata metadata = StreamMetadata.builder()
+                .fundList(FundCardSource.builder()
+                        .subtitle("更新日期")
+                        .list(Arrays.asList(
+                                FundDefinition.builder().fundId("000001")
+                                        .fundName("基金一").build(),
+                                FundDefinition.builder().fundId("000002")
+                                        .fundName("基金二").build(),
+                                FundDefinition.builder().fundId("000003")
+                                        .fundName("基金三").build()))
+                        .build())
+                .suggestedQuery(Collections.singletonList(
+                        SuggestedQueryDefinition.builder()
+                                .query("上游推荐问").build()))
+                .status(MetadataStatus.NORMAL)
+                .build();
+        when(fundCardPort.createCard(any()))
+                .thenReturn(FundCard.builder().cardId("group-card-1")
+                                .htmlContent("<div>第一组</div>").build(),
+                        FundCard.builder().cardId("group-card-2")
+                                .htmlContent("<div>第二组</div>").build());
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.just(
+                        UpstreamStreamFrame.metadata(metadataJson, metadata),
+                        UpstreamStreamFrame.content(
+                                "<m-card><li id='000002' />"
+                                        + "<li id='000001' /></m-card>"),
+                        UpstreamStreamFrame.content(
+                                "<m-card><li id='000003' />"
+                                        + "<li id='000002' /></m-card>")));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"fund-recommendations\","
+                        + "\"question\":\"推荐基金\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String stream = result.getResponse().getContentAsString();
+        int metadataIndex = stream.lastIndexOf("\"returnType\":\"METADATA\"");
+        int frameStart = stream.lastIndexOf("data:", metadataIndex);
+        int frameEnd = stream.indexOf("\n\n", metadataIndex);
+        JsonNode queries = OBJECT_MAPPER.readTree(
+                stream.substring(frameStart + 5, frameEnd))
+                .path("body").path("suggestedQuery");
+        org.junit.jupiter.api.Assertions.assertEquals(3, queries.size());
+        org.junit.jupiter.api.Assertions.assertEquals("上游推荐问",
+                queries.path(0).path("query").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("深度解读基金二",
+                queries.path(1).path("query").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("null",
+                queries.path(1).path("intent").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("深度解读基金一",
+                queries.path(2).path("query").asText());
+        org.junit.jupiter.api.Assertions.assertFalse(
+                stream.contains("深度解读基金三"));
+        verify(fundCardPort, times(2)).createCard(any());
+    }
+
+    @Test
     void shouldReturnFallbackThenDoneForUnknownCardTag()
             throws Exception {
         MvcResult result = performAsync(post(ENDPOINT)
@@ -476,7 +541,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"流式内容校验失败\""));
+                        "\"errorMsg\":\"流式内容校验失败\""));
     }
 
     @Test
@@ -845,7 +910,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"流式内容处理失败\""));
+                        "\"errorMsg\":\"流式内容处理失败\""));
         org.junit.jupiter.api.Assertions.assertFalse(
                 doneFrame(result.getResponse().getContentAsString())
                         .has("body"));
@@ -880,7 +945,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"外部 API 调用失败\""));
+                        "\"errorMsg\":\"外部 API 调用失败\""));
         org.junit.jupiter.api.Assertions.assertFalse(
                 doneFrame(result.getResponse().getContentAsString())
                         .has("body"));
@@ -931,7 +996,7 @@ class FilteredModelStreamIntegrationTest {
         assertFallbackBeforeDone(result);
         org.junit.jupiter.api.Assertions.assertTrue(
                 result.getResponse().getContentAsString().contains(
-                        "\"fallbackReason\":\"上游返回错误帧或数据格式不符合要求\""));
+                        "\"errorMsg\":\"上游返回错误帧或数据格式不符合要求\""));
     }
 
     @Test
@@ -939,7 +1004,7 @@ class FilteredModelStreamIntegrationTest {
             throws Exception {
         AtomicBoolean laterFrameSubscribed = new AtomicBoolean(false);
         String metadata = "{\"body\":{\"recordId\":\"metadata-fallback\"," 
-                + "\"status\":\"FALLBACK\"},"
+                + "\"status\":\"FALLBACK\",\"errorMsg\":\"上游兜底原因\"},"
                 + "\"returnType\":\"METADATA\"}";
         UpstreamStreamFrame fallbackMetadata = UpstreamStreamFrame.metadata(
                 metadata,
@@ -951,6 +1016,7 @@ class FilteredModelStreamIntegrationTest {
                                         .content("上游主动兜底话术")
                                         .build()))
                         .status(MetadataStatus.FALLBACK)
+                        .errorMsg("上游兜底原因")
                         .build());
         when(externalModelClient.openStream(
                 any(FilteredStreamRequestContext.class)))
@@ -990,19 +1056,76 @@ class FilteredModelStreamIntegrationTest {
         org.junit.jupiter.api.Assertions.assertTrue(doneIndex > fallbackIndex);
         org.junit.jupiter.api.Assertions.assertFalse(laterFrameSubscribed.get());
         org.junit.jupiter.api.Assertions.assertTrue(stream.contains(
-                "\"fallbackReason\":\"上游元数据要求兜底\""));
+                "\"errorMsg\":\"上游兜底原因\""));
+        org.junit.jupiter.api.Assertions.assertEquals("上游兜底原因",
+                fallbackFrame(stream).path("errorMsg").asText());
+    }
+
+    @Test
+    void shouldReturnMetadataRefuseDoneAndCancelUpstream()
+            throws Exception {
+        AtomicBoolean laterFrameSubscribed = new AtomicBoolean(false);
+        String metadataJson = "{\"body\":{\"status\":\"REFUSE\","
+                + "\"refuseMsg\":\"暂不回答\","
+                + "\"errorMsg\":\"上游拒答原因\"},\"returnType\":\"METADATA\"}";
+        UpstreamStreamFrame refuseMetadata = UpstreamStreamFrame.metadata(
+                metadataJson, StreamMetadata.builder()
+                        .status(MetadataStatus.REFUSE)
+                        .errorMsg("上游拒答原因")
+                        .build());
+        when(externalModelClient.openStream(
+                any(FilteredStreamRequestContext.class)))
+                .thenReturn(Flux.concat(Flux.just(refuseMetadata),
+                        Flux.defer(() -> {
+                            laterFrameSubscribed.set(true);
+                            return Flux.just(UpstreamStreamFrame.content(
+                                    "不应输出的正文"));
+                        })));
+
+        MvcResult result = performAsync(post(ENDPOINT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"msgId\":\"metadata-refuse\","
+                        + "\"question\":\"普通问题\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String stream = result.getResponse().getContentAsString();
+        String[] frames = stream.trim().split("\\n\\n");
+        org.junit.jupiter.api.Assertions.assertEquals(3, frames.length);
+        JsonNode first = OBJECT_MAPPER.readTree(frames[0].substring(5));
+        JsonNode second = OBJECT_MAPPER.readTree(frames[1].substring(5));
+        JsonNode third = OBJECT_MAPPER.readTree(frames[2].substring(5));
+        org.junit.jupiter.api.Assertions.assertEquals("METADATA",
+                first.path("returnType").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("metadata-refuse",
+                first.path("body").path("recordId").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("暂不回答",
+                first.path("body").path("refuseMsg").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("REFUSE",
+                second.path("returnType").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("上游拒答原因",
+                second.path("errorMsg").asText());
+        org.junit.jupiter.api.Assertions.assertFalse(second.has("body"));
+        org.junit.jupiter.api.Assertions.assertEquals("DONE",
+                third.path("returnType").asText());
+        org.junit.jupiter.api.Assertions.assertFalse(third.has("body"));
+        org.junit.jupiter.api.Assertions.assertFalse(laterFrameSubscribed.get());
     }
 
     @Test
     void shouldReturnFallbackWhenUpstreamFailsAfterMetadata()
             throws Exception {
         String metadata = "{\"body\":{\"recordId\":\"mid-error\"," 
-                + "\"status\":\"NORMAL\"},"
+                + "\"status\":\"NORMAL\",\"errorMsg\":\"上游过程说明\"},"
                 + "\"returnType\":\"METADATA\"}";
         when(externalModelClient.openStream(
                 any(FilteredStreamRequestContext.class)))
                 .thenReturn(Flux.concat(
-                        Flux.just(UpstreamStreamFrame.metadata(metadata),
+                        Flux.just(UpstreamStreamFrame.metadata(metadata,
+                                        StreamMetadata.builder()
+                                                .status(MetadataStatus.NORMAL)
+                                                .errorMsg("上游过程说明")
+                                                .build()),
                                 UpstreamStreamFrame.content("极"),
                                 UpstreamStreamFrame.content("端高")),
                         Flux.error(new UpstreamFrameException("流中异常"))));
@@ -1019,6 +1142,9 @@ class FilteredModelStreamIntegrationTest {
                 .andExpect(content().string(not(containsString("流中异常"))))
                 .andReturn();
         assertFallbackBeforeDone(result);
+        org.junit.jupiter.api.Assertions.assertEquals("上游过程说明",
+                fallbackFrame(result.getResponse().getContentAsString())
+                        .path("errorMsg").asText());
         org.junit.jupiter.api.Assertions.assertEquals("极端高",
                 doneFrame(result.getResponse().getContentAsString())
                         .path("body").path("originContent").asText());
@@ -1119,23 +1245,27 @@ class FilteredModelStreamIntegrationTest {
                 firstBody.path("fallbackAnswer").path(0).has("content"));
         org.junit.jupiter.api.Assertions.assertTrue(fallbackIndex > metadataIndex);
         org.junit.jupiter.api.Assertions.assertTrue(doneIndex > fallbackIndex);
-        int fallbackStart = stream.lastIndexOf("data:", fallbackIndex);
-        int fallbackEnd = stream.indexOf("\n\n", fallbackIndex);
-        JsonNode fallback = OBJECT_MAPPER.readTree(
-                stream.substring(fallbackStart + 5, fallbackEnd));
+        JsonNode fallback = fallbackFrame(stream);
         org.junit.jupiter.api.Assertions.assertEquals(
                 "FALLBACK", fallback.path("returnType").asText());
         org.junit.jupiter.api.Assertions.assertTrue(
-                fallback.path("body").path("fallbackReason").isTextual());
+                fallback.path("errorMsg").isTextual());
         org.junit.jupiter.api.Assertions.assertFalse(
-                fallback.path("body").path("fallbackReason").asText().isEmpty());
-        org.junit.jupiter.api.Assertions.assertFalse(
-                fallback.path("body").has("answer"));
+                fallback.path("errorMsg").asText().isEmpty());
+        org.junit.jupiter.api.Assertions.assertFalse(fallback.has("body"));
         org.junit.jupiter.api.Assertions.assertFalse(fallback.has("message"));
         JsonNode done = doneFrame(stream);
         org.junit.jupiter.api.Assertions.assertEquals("DONE",
                 done.path("returnType").asText());
         org.junit.jupiter.api.Assertions.assertFalse(done.has("originContent"));
+    }
+
+    private JsonNode fallbackFrame(String stream) throws Exception {
+        int fallbackIndex = stream.indexOf("\"returnType\":\"FALLBACK\"");
+        int fallbackStart = stream.lastIndexOf("data:", fallbackIndex);
+        int fallbackEnd = stream.indexOf("\n\n", fallbackIndex);
+        return OBJECT_MAPPER.readTree(
+                stream.substring(fallbackStart + 5, fallbackEnd));
     }
 
     private JsonNode doneFrame(String stream) throws Exception {
